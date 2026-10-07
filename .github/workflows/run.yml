@@ -19,7 +19,7 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: |
-          pip install playwright scrapeless cryptography python-dotenv
+          pip install playwright cryptography
           playwright install chromium --with-deps
       - name: Decrypt accounts
         run: |
@@ -38,7 +38,6 @@ jobs:
         run: |
           python3 forward.py --start ${{ inputs.start }} --limit ${{ inputs.limit }}
         env:
-          SCRAPELESS_KEY: ${{ secrets.SCRAPELESS_KEY }}
           PROXY_USER: ${{ secrets.PROXY_USER }}
           PROXY_PASS: ${{ secrets.PROXY_PASS }}
       - name: Upload progress
