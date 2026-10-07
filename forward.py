@@ -6,12 +6,74 @@ GitHub Actions runner: Outlook forwarding via local Playwright + proxy.
 - Env: PROXY_USER, PROXY_PASS
 - Args: --start N --limit N
 """
-import asyncio, csv, json, os, sys
+import asyncio, csv, json, os, sys, re, time
+import urllib.request, urllib.parse
 
 DESTS = [f"ranksoldier{i}@gmail.com" for i in range(2, 12)]
 RULE_NAME = "AutoForward-All"
 PROXY_HOST = "thehub.proxy-cheap.com"
 PROXY_PORT = "8080"
+
+def get_gmail_access_token(refresh_token, client_id):
+    """Exchange refresh_token for Gmail API access token."""
+    try:
+        data = urllib.parse.urlencode({
+            'grant_type': 'refresh_token',
+            'refresh_token': refresh_token,
+            'client_id': client_id,
+        }).encode()
+        req = urllib.request.Request(
+            'https://oauth2.googleapis.com/token',
+            data=data,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'}
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+            return result.get('access_token')
+    except Exception as e:
+        print(f"    gmail token failed: {str(e)[:60]}", flush=True)
+        return None
+
+def get_verification_code_from_gmail(refresh_token, client_id, max_wait=120):
+    """Poll recovery Gmail for Microsoft verification code."""
+    token = get_gmail_access_token(refresh_token, client_id)
+    if not token:
+        return None
+    headers = {'Authorization': f'Bearer {token}'}
+    # Search for Microsoft verification emails
+    start = time.time()
+    while time.time() - start < max_wait:
+        try:
+            # List recent messages
+            url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=from:microsoft+newer_than:10m&maxResults=5'
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode())
+            messages = data.get('messages', [])
+            for msg in messages:
+                msg_id = msg['id']
+                # Get message details
+                url2 = f'https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}?format=full'
+                req2 = urllib.request.Request(url2, headers=headers)
+                with urllib.request.urlopen(req2, timeout=30) as resp2:
+                    msg_data = json.loads(resp2.read().decode())
+                # Extract body and find code
+                body = json.dumps(msg_data)
+                # Look for 6-8 digit verification code
+                codes = re.findall(r'\b(\d{6,8})\b', body)
+                # Filter for codes near "verification" or "security code"
+                if 'verif' in body.lower() or 'security code' in body.lower():
+                    for code in codes:
+                        # Skip years, common numbers
+                        if not code.startswith('20') and len(code) >= 6:
+                            print(f"    found verification code in Gmail", flush=True)
+                            return code
+            time.sleep(10)
+        except Exception as e:
+            print(f"    gmail poll failed: {str(e)[:60]}", flush=True)
+            time.sleep(10)
+    print(f"    no verification code found in Gmail", flush=True)
+    return None
 
 def dest_for(idx):
     return DESTS[idx // 100]
@@ -85,7 +147,7 @@ async def login(page, acc):
         return False
     return True
 
-async def create_rule(page, dest):
+async def create_rule(page, dest, acc):
     """Click Settings gear -> use the optionsModal directly."""
     await page.goto("https://outlook.live.com/mail/0/",
                     timeout=60000, wait_until="domcontentloaded")
@@ -151,13 +213,76 @@ async def create_rule(page, dest):
         except Exception as e:
             print(f"    search nav failed: {str(e)[:80]}", flush=True)
             return False
-        # Check for verification blocker
+        # Check for verification blocker - attempt to verify via recovery email
         try:
             modal_text = await modal.inner_text(timeout=5000)
             if "verify your account" in modal_text.lower() or "sign in and verify" in modal_text.lower():
-                print(f"    BLOCKED: account needs verification", flush=True)
-                return False
-        except Exception:
+                print(f"    verification required, attempting via recovery email", flush=True)
+                # Look for "send code" or similar button
+                send_btn = None
+                for txt in ["Send code", "Send verification", "Verify", "Continue"]:
+                    try:
+                        el = modal.get_by_text(txt, exact=False).first
+                        await el.wait_for(state="visible", timeout=5000)
+                        send_btn = el
+                        print(f"    found: {txt}", flush=True)
+                        break
+                    except Exception:
+                        continue
+                if send_btn:
+                    try:
+                        await send_btn.click(timeout=8000)
+                    except Exception:
+                        await send_btn.evaluate("el => el.click()")
+                    await page.wait_for_timeout(3000)
+                    print(f"    code send requested", flush=True)
+                    # Poll Gmail for the verification code
+                    refresh_token = acc.get('refresh_token', '')
+                    client_id = acc.get('client_id', '')
+                    if refresh_token and client_id:
+                        code = get_verification_code_from_gmail(refresh_token, client_id)
+                        if code:
+                            # Find code input and enter it
+                            code_input = None
+                            for sel in [
+                                lambda: modal.locator('input[type="text"]').first,
+                                lambda: modal.locator('input[inputmode="numeric"]').first,
+                            ]:
+                                try:
+                                    el = sel()
+                                    await el.wait_for(state="visible", timeout=8000)
+                                    code_input = el
+                                    break
+                                except Exception:
+                                    continue
+                            if code_input:
+                                await code_input.fill(code)
+                                await page.wait_for_timeout(1000)
+                                # Click verify/submit
+                                for txt in ["Verify", "Submit", "Confirm"]:
+                                    try:
+                                        btn = modal.get_by_text(txt, exact=False).first
+                                        await btn.wait_for(timeout=5000)
+                                        await btn.click(timeout=8000)
+                                        await page.wait_for_timeout(5000)
+                                        print(f"    verification code submitted", flush=True)
+                                        break
+                                    except Exception:
+                                        continue
+                            else:
+                                print(f"    no code input found", flush=True)
+                                return False
+                        else:
+                            print(f"    could not retrieve verification code", flush=True)
+                            return False
+                    else:
+                        print(f"    no refresh_token/client_id for Gmail", flush=True)
+                        return False
+                else:
+                    print(f"    BLOCKED: no send-code button found", flush=True)
+                    return False
+        except Exception as e:
+            print(f"    verification handling failed: {str(e)[:60]}", flush=True)
             pass
         # Now should be on Forwarding page - find enable toggle (could be switch, not checkbox)
         # Dismiss any overlay first
@@ -402,7 +527,7 @@ async def run_one(idx, acc, proxy_cfg, sem, progress):
                     progress[email] = "login_failed"
                     print(f"[{idx}] login FAILED", flush=True)
                 else:
-                    rok = await create_rule(page, dest)
+                    rok = await create_rule(page, dest, acc)
                     progress[email] = "done" if rok else "rule_failed"
                     print(f"[{idx}] rule {'CREATED' if rok else 'FAILED'}", flush=True)
                 await browser.close()
