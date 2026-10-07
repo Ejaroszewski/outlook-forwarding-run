@@ -19,7 +19,7 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: |
-          pip install playwright scrapeless cryptography
+          pip install playwright scrapeless cryptography python-dotenv
           playwright install chromium --with-deps
       - name: Decrypt accounts
         run: |
