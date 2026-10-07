@@ -95,17 +95,21 @@ async def create_rule(page, dest):
         print(f"    inbox bounced to microsoft.com", flush=True)
         return False
     try:
-        # Click Settings gear icon
+        # Click Settings gear icon - try multiple approaches
         settings_btn = None
         for selector in [
             lambda: page.get_by_role("button", name="Settings").first,
-            lambda: page.get_by_label("Settings").first,
-            lambda: page.locator('[aria-label="Settings"]').first,
+            lambda: page.get_by_title("Settings").first,
+            lambda: page.locator('button[aria-label*="Settings" i]').first,
+            lambda: page.locator('button[title*="Settings" i]').first,
+            # Gear icon is often in the top bar - try by position
+            lambda: page.locator('header button').last,
         ]:
             try:
                 el = selector()
-                await el.wait_for(timeout=10000)
+                await el.wait_for(timeout=8000)
                 settings_btn = el
+                print(f"    found Settings button", flush=True)
                 break
             except Exception:
                 continue
@@ -230,15 +234,21 @@ async def run_one(idx, acc, proxy_cfg, sem, progress):
         save_progress(progress)
 
 async def main():
+    # Try without proxy first (proxy-cheap gateway is unreliable)
+    # Set USE_PROXY=1 to enable proxy
+    use_proxy = os.environ.get("USE_PROXY", "0") == "1"
     puser = os.environ.get("PROXY_USER", "")
     ppass = os.environ.get("PROXY_PASS", "")
     proxy_cfg = None
-    if puser:
+    if use_proxy and puser:
         proxy_cfg = {
             "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
             "username": puser,
             "password": ppass,
         }
+        print(f"Using proxy: {PROXY_HOST}", flush=True)
+    else:
+        print(f"Running WITHOUT proxy (direct connection)", flush=True)
     accounts = load_accounts()
     args = sys.argv[1:]
     limit = int(args[args.index("--limit") + 1]) if "--limit" in args else len(accounts)
