@@ -86,69 +86,102 @@ async def login(page, acc):
     return True
 
 async def create_rule(page, dest):
-    """Try OWA classic options page for forwarding (more reliable URLs)."""
-    # Try the classic OWA options page
-    for url in [
-        "https://outlook.live.com/owa/options.aspx",
-        "https://outlook.live.com/mail/0/options/mail/forwarding",
-    ]:
-        try:
-            await page.goto(url, timeout=60000, wait_until="domcontentloaded")
-            await page.wait_for_timeout(8000)
-            title = await page.title()
-            print(f"    tried {url.split('/')[-1]}: title={title[:50]}", flush=True)
-            if "microsoft.com" in page.url and "options" not in page.url:
-                continue
-            # Look for forwarding controls
-            try:
-                # Classic OWA has "Forwarding" section
-                fwd_text = await page.get_by_text("Forwarding", exact=False).first.count()
-                if fwd_text > 0:
-                    print(f"    found Forwarding text on page", flush=True)
-                    break
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"    {url} failed: {str(e)[:50]}", flush=True)
-            continue
-    
-    # If we're on a page with forwarding options, try to set it
+    """Use Joseph's direct forwarding URL: outlook.live.com/mail/options/mail/forwarding"""
+    await page.goto("https://outlook.live.com/mail/options/mail/forwarding",
+                    timeout=60000, wait_until="domcontentloaded")
+    await page.wait_for_timeout(10000)
+    print(f"    forwarding URL loaded: title={await page.title()}", flush=True)
+    print(f"    url: {page.url}", flush=True)
+    if "microsoft.com" in page.url and "outlook" not in page.url:
+        print(f"    bounced to microsoft.com", flush=True)
+        return False
     try:
-        # Look for enable forwarding radio/checkbox
-        enable = None
+        # Look for Enable forwarding checkbox
+        enable_cb = None
         for sel in [
             lambda: page.get_by_label("Enable forwarding", exact=False).first,
-            lambda: page.locator('input[type="radio"]').first,
+            lambda: page.get_by_text("Enable forwarding", exact=False).first,
             lambda: page.locator('input[type="checkbox"]').first,
         ]:
             try:
                 el = sel()
-                await el.wait_for(timeout=5000)
-                enable = el
+                await el.wait_for(timeout=10000)
+                enable_cb = el
+                print(f"    found enable checkbox", flush=True)
                 break
             except Exception:
                 continue
-        if not enable:
-            print(f"    no forwarding controls found, trying Settings UI", flush=True)
-            return await create_rule_via_settings(page, dest)
-        
-        # Classic OWA flow: select "Forward all emails" radio, fill address, save
-        await enable.click(timeout=8000)
-        await page.wait_for_timeout(1000)
-        # Find address textbox
-        addr_box = page.locator('input[type="text"]').first
-        await addr_box.wait_for(timeout=8000)
-        await addr_box.fill(dest)
-        await page.wait_for_timeout(1000)
+        if not enable_cb:
+            print(f"    no enable checkbox, dumping page", flush=True)
+            try:
+                text = await page.locator("body").inner_text()
+                print(f"    body: {text[:400]}", flush=True)
+            except Exception:
+                pass
+            return False
+        # Check if it's a checkbox and whether checked
+        try:
+            if await enable_cb.is_checked():
+                print(f"    already enabled", flush=True)
+            else:
+                await enable_cb.click(timeout=8000)
+                await page.wait_for_timeout(2000)
+                print(f"    enabled forwarding", flush=True)
+        except Exception:
+            # Might be a label, try clicking
+            await enable_cb.click(timeout=8000)
+            await page.wait_for_timeout(2000)
+        # Find address input
+        to_box = None
+        for sel in [
+            lambda: page.locator('input[type="text"]').first,
+            lambda: page.locator('input[type="email"]').first,
+            lambda: page.get_by_placeholder("Email address", exact=False).first,
+        ]:
+            try:
+                el = sel()
+                await el.wait_for(timeout=8000)
+                to_box = el
+                break
+            except Exception:
+                continue
+        if not to_box:
+            print(f"    no address input found", flush=True)
+            return False
+        await to_box.fill(dest)
+        await page.wait_for_timeout(1500)
+        print(f"    filled {dest}", flush=True)
+        # Keep a copy
+        try:
+            keep = page.get_by_text("Keep a copy", exact=False).first
+            await keep.wait_for(timeout=3000)
+            # Find associated checkbox
+            keep_cb = page.locator('input[type="checkbox"]').nth(1)
+            if await keep_cb.count() > 0 and not await keep_cb.is_checked():
+                await keep_cb.click(timeout=5000)
+                print(f"    keep-a-copy checked", flush=True)
+        except Exception:
+            pass
         # Save
-        save_btn = page.get_by_role("button", name="Save").first
-        await save_btn.click(timeout=10000)
-        await page.wait_for_timeout(5000)
-        print(f"    forwarding set via OWA classic", flush=True)
+        saved = False
+        for name in ["Save", "Lưu"]:
+            try:
+                btn = page.get_by_role("button", name=name).first
+                await btn.wait_for(timeout=5000)
+                await btn.click(timeout=10000)
+                await page.wait_for_timeout(5000)
+                print(f"    clicked Save", flush=True)
+                saved = True
+                break
+            except Exception:
+                continue
+        if not saved:
+            print(f"    no Save button", flush=True)
+            return False
         return True
     except Exception as e:
-        print(f"    OWA classic failed: {str(e)[:80]}", flush=True)
-        return await create_rule_via_settings(page, dest)
+        print(f"    failed: {str(e)[:80]}", flush=True)
+        return False
 
 async def create_rule_via_settings(page, dest):
     """Fallback: navigate via Settings gear UI."""
