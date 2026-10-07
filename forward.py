@@ -86,59 +86,120 @@ async def login(page, acc):
     return True
 
 async def create_rule(page, dest):
-    """Navigate via Settings gear -> Quick Settings panel -> View all -> Forwarding."""
+    """Click Settings gear -> use the optionsModal directly."""
     await page.goto("https://outlook.live.com/mail/0/",
                     timeout=60000, wait_until="domcontentloaded")
     await page.wait_for_timeout(10000)
     try:
-        # Find and click Settings gear (button 6 from debug)
         settings_btn = page.get_by_role("button", name="Settings").first
         await settings_btn.wait_for(timeout=10000)
         await settings_btn.click(timeout=8000)
         await page.wait_for_timeout(5000)
         print(f"    clicked Settings gear", flush=True)
-        # Dump the Quick Settings panel HTML
+        # Find the optionsModal
+        modal = page.locator('.optionsModal').first
         try:
-            # The panel is usually a div on the right side
-            panels = await page.locator('[role="dialog"], [role="complementary"], aside, [data-testid*="settings" i]').all()
-            print(f"    found {len(panels)} potential panels", flush=True)
-            for i, p in enumerate(panels[:3]):
-                try:
-                    html = await p.inner_html()
-                    print(f"    panel {i} HTML: {html[:1000]}", flush=True)
-                except Exception as e:
-                    print(f"    panel {i} failed: {e}", flush=True)
-        except Exception as e:
-            print(f"    panel dump failed: {e}", flush=True)
-        # Look for "View all" link (various texts)
-        view_all = None
-        for txt in ["View all Outlook settings", "See all settings", "View all settings", "All settings"]:
+            await modal.wait_for(timeout=10000)
+            print(f"    found optionsModal", flush=True)
+        except Exception:
+            print(f"    no optionsModal found", flush=True)
+            return False
+        # Look for search box inside modal
+        search = None
+        for sel in [
+            lambda: modal.locator('input[type="search"]').first,
+            lambda: modal.locator('input[placeholder*="Search" i]').first,
+            lambda: modal.get_by_placeholder("Search Outlook settings").first,
+        ]:
             try:
-                el = page.get_by_text(txt, exact=False).first
-                await el.wait_for(timeout=3000)
-                view_all = el
-                print(f"    found link: {txt}", flush=True)
+                el = sel()
+                await el.wait_for(timeout=5000)
+                search = el
+                print(f"    found search box", flush=True)
                 break
             except Exception:
                 continue
-        if view_all:
-            await view_all.click(timeout=8000)
-            await page.wait_for_timeout(5000)
-            print(f"    clicked View all", flush=True)
-            # Now in full settings dialog - search for forwarding
+        if search:
+            await search.fill("forwarding")
+            await page.wait_for_timeout(3000)
+            print(f"    searched forwarding", flush=True)
+            # Click the Forwarding result
             try:
-                search = page.locator('input[type="search"], input[placeholder*="Search" i]').first
-                await search.wait_for(timeout=8000)
-                await search.fill("forwarding")
-                await page.wait_for_timeout(3000)
-                print(f"    searched forwarding", flush=True)
+                # The search results appear as buttons/links
+                result = modal.get_by_text("Forwarding", exact=False).first
+                await result.wait_for(timeout=5000)
+                await result.click(timeout=8000)
+                await page.wait_for_timeout(4000)
+                print(f"    clicked Forwarding result", flush=True)
             except Exception as e:
-                print(f"    search failed: {e}", flush=True)
+                print(f"    no Forwarding in search results: {e}", flush=True)
+                # Dump modal text to see what's there
+                try:
+                    txt = await modal.inner_text()
+                    print(f"    modal text: {txt[:500]}", flush=True)
+                except Exception:
+                    pass
+                return False
         else:
-            print(f"    no View all link found", flush=True)
-        return False  # Debug only for now
+            # No search - try navigating via left nav: Mail > Forwarding
+            print(f"    no search box, trying nav", flush=True)
+            try:
+                mail_nav = modal.get_by_text("Mail", exact=True).first
+                await mail_nav.click(timeout=5000)
+                await page.wait_for_timeout(2000)
+                fwd_nav = modal.get_by_text("Forwarding", exact=False).first
+                await fwd_nav.click(timeout=5000)
+                await page.wait_for_timeout(3000)
+                print(f"    navigated to Forwarding", flush=True)
+            except Exception as e:
+                print(f"    nav failed: {e}", flush=True)
+                return False
+        # Now should be on Forwarding page - find enable checkbox
+        enable_cb = None
+        for sel in [
+            lambda: modal.locator('input[type="checkbox"]').first,
+            lambda: modal.get_by_label("Enable forwarding", exact=False).first,
+        ]:
+            try:
+                el = sel()
+                await el.wait_for(timeout=8000)
+                enable_cb = el
+                print(f"    found enable checkbox", flush=True)
+                break
+            except Exception:
+                continue
+        if not enable_cb:
+            print(f"    no enable checkbox in modal", flush=True)
+            return False
+        if not await enable_cb.is_checked():
+            await enable_cb.click(timeout=8000)
+            await page.wait_for_timeout(2000)
+            print(f"    enabled", flush=True)
+        # Fill address
+        to_box = modal.locator('input[type="text"], input[type="email"]').first
+        await to_box.wait_for(timeout=8000)
+        await to_box.fill(dest)
+        await page.wait_for_timeout(1500)
+        print(f"    filled {dest}", flush=True)
+        # Keep a copy
+        try:
+            checkboxes = await modal.locator('input[type="checkbox"]').all()
+            if len(checkboxes) > 1:
+                keep_cb = checkboxes[1]
+                if not await keep_cb.is_checked():
+                    await keep_cb.click(timeout=5000)
+                    print(f"    keep-copy checked", flush=True)
+        except Exception:
+            pass
+        # Save
+        save_btn = modal.get_by_role("button", name="Save").first
+        await save_btn.wait_for(timeout=8000)
+        await save_btn.click(timeout=10000)
+        await page.wait_for_timeout(5000)
+        print(f"    SAVED forwarding to {dest}", flush=True)
+        return True
     except Exception as e:
-        print(f"    failed: {str(e)[:80]}", flush=True)
+        print(f"    failed: {str(e)[:100]}", flush=True)
         return False
 
 async def create_rule_via_settings(page, dest):
