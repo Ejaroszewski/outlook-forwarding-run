@@ -389,6 +389,17 @@ async def create_rule(page, dest, acc):
         async def robust_click(el, desc=""):
             for attempt in range(3):
                 try:
+                    # Human-like: move the mouse to the element in steps before clicking,
+                    # with slight random offset — not a teleport straight onto it.
+                    try:
+                        box = await el.bounding_box()
+                        if box:
+                            tx = box["x"] + box["width"] / 2 + random.uniform(-10, 10)
+                            ty = box["y"] + box["height"] / 2 + random.uniform(-6, 6)
+                            await page.mouse.move(tx, ty, steps=random.randint(8, 25))
+                            await page.wait_for_timeout(random.randint(150, 500))
+                    except Exception:
+                        pass
                     await el.click(timeout=5000)
                     return True
                 except Exception:
@@ -618,40 +629,72 @@ async def run_one(idx, acc, proxy_cfg, sem, progress):
         await asyncio.sleep(delay)
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    proxy=proxy_cfg,
-                    args=["--disable-blink-features=AutomationControlled"],
-                )
-                # --- Fingerprint rotation: wide variation per account ---
-                # User agents: Chrome 128-132 + Edge, Windows 10/11
-                ua_pool = [
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
-                ]
+                # --- Browser engine rotation: Chromium 80% / Firefox 20% ---
+                # Real engine diversity (not just UA strings). Firefox needs
+                # `playwright install firefox` in the workflow.
+                engine = random.choices(["chromium", "firefox"], weights=[80, 20])[0]
+                if engine == "firefox":
+                    browser = await p.firefox.launch(headless=True, proxy=proxy_cfg)
+                else:
+                    browser = await p.chromium.launch(
+                        headless=True,
+                        proxy=proxy_cfg,
+                        args=["--disable-blink-features=AutomationControlled"],
+                    )
+                # --- Max fingerprint rotation: UA matched to engine ---
+                if engine == "firefox":
+                    ua_pool = [
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
+                    ]
+                else:
+                    ua_pool = [
+                        # Chrome
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+                        "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                        # Edge
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 Edg/132.0.0.0",
+                        # Opera
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 OPR/115.0.0.0",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 OPR/116.0.0.0",
+                    ]
                 ua = random.choice(ua_pool)
-                # Viewports: common desktop sizes
+                # Viewports: 10 common desktop sizes
                 vw_pool = [
+                    {"width": 1280, "height": 720},
                     {"width": 1366, "height": 768},
                     {"width": 1440, "height": 900},
+                    {"width": 1512, "height": 982},
                     {"width": 1536, "height": 864},
                     {"width": 1600, "height": 900},
+                    {"width": 1680, "height": 1050},
                     {"width": 1920, "height": 1080},
-                    {"width": 1280, "height": 720},
+                    {"width": 2048, "height": 1152},
+                    {"width": 2560, "height": 1440},
                 ]
                 vw = random.choice(vw_pool)
-                # Device scale factor: 1x or 2x (retina) at random
-                dsf = random.choice([1, 1, 2])
+                dsf = random.choice([1, 1, 2])  # device scale factor
+                tz = random.choice(["America/New_York", "America/Chicago",
+                                    "America/Denver", "America/Los_Angeles"])
+                loc = random.choices(["en-US", "en-GB"], weights=[85, 15])[0]
+                scheme = random.choices(["light", "dark"], weights=[80, 20])[0]
+                print(f"[{idx}] engine={engine} tz={tz} {vw['width']}x{vw['height']}", flush=True)
                 ctx = await browser.new_context(
                     user_agent=ua,
                     viewport=vw,
                     device_scale_factor=dsf,
-                    locale="en-US",
+                    locale=loc,
+                    timezone_id=tz,
+                    color_scheme=scheme,
                 )
                 # Explicitly clear any cached data (fresh context should be clean, but be thorough)
                 await ctx.clear_cookies()
