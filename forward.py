@@ -40,11 +40,9 @@ def get_verification_code_from_gmail(refresh_token, client_id, max_wait=120):
     if not token:
         return None
     headers = {'Authorization': f'Bearer {token}'}
-    # Search for Microsoft verification emails
     start = time.time()
     while time.time() - start < max_wait:
         try:
-            # List recent messages
             url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=from:microsoft+newer_than:10m&maxResults=5'
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -52,22 +50,18 @@ def get_verification_code_from_gmail(refresh_token, client_id, max_wait=120):
             messages = data.get('messages', [])
             for msg in messages:
                 msg_id = msg['id']
-                # Get message details
                 url2 = f'https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}?format=full'
                 req2 = urllib.request.Request(url2, headers=headers)
                 with urllib.request.urlopen(req2, timeout=30) as resp2:
                     msg_data = json.loads(resp2.read().decode())
-                # Extract body and find code
                 body = json.dumps(msg_data)
-                # Look for 6-8 digit verification code
                 codes = re.findall(r'\b(\d{6,8})\b', body)
-                # Filter for codes near "verification" or "security code"
                 if 'verif' in body.lower() or 'security code' in body.lower():
                     for code in codes:
-                        # Skip years, common numbers
-                        if not code.startswith('20') and len(code) >= 6:
-                            print(f"    found verification code in Gmail", flush=True)
-                            return code
+                        if len(code) == 8 and code.startswith(('19', '20')):
+                            continue
+                        print(f"    found verification code in Gmail", flush=True)
+                        return code
             time.sleep(10)
         except Exception as e:
             print(f"    gmail poll failed: {str(e)[:60]}", flush=True)
@@ -149,7 +143,6 @@ async def login(page, acc):
 
 async def fill_verification_code(page, modal, code):
     """Enter a Microsoft verification code into the modal (single or multi-box OTP)."""
-    # Multi-box OTP: one input per digit
     try:
         boxes = modal.locator('input[inputmode="numeric"], input[type="tel"]')
         n = await boxes.count()
@@ -174,7 +167,6 @@ async def fill_verification_code(page, modal, code):
         except Exception as e:
             print(f"    multi-box fill failed: {str(e)[:60]}", flush=True)
             return False
-    # Single input
     for sel in [
         lambda: modal.locator('input[inputmode="numeric"]').first,
         lambda: modal.locator('input[type="text"]').first,
@@ -210,7 +202,6 @@ async def create_rule(page, dest, acc):
         await settings_btn.click(timeout=8000)
         await page.wait_for_timeout(5000)
         print(f"    clicked Settings gear", flush=True)
-        # Find the optionsModal
         modal = page.locator('.optionsModal').first
         try:
             await modal.wait_for(timeout=10000)
@@ -218,14 +209,11 @@ async def create_rule(page, dest, acc):
         except Exception:
             print(f"    no optionsModal found", flush=True)
             return False
-        # Use search box in modal (more reliable than nav clicking).
-        # The modal search box can render slowly or vary by UI language,
-        # so try several selectors with retries before giving up.
         search = None
         search_selectors = [
             lambda: modal.locator('input[type="search"]').first,
             lambda: modal.locator('input[placeholder*="Search" i]').first,
-            lambda: modal.locator('input[placeholder*="T\u00ecm" i]').first,
+            lambda: modal.locator('input[placeholder*="Tim" i]').first,
             lambda: modal.locator('input[aria-label*="search" i]').first,
             lambda: modal.locator('[role="searchbox"]').first,
         ]
@@ -249,9 +237,8 @@ async def create_rule(page, dest, acc):
             await search.fill("forwarding")
             await page.wait_for_timeout(3000)
             print(f"    searched forwarding", flush=True)
-            # Click the Forwarding result
             result = None
-            for txt in ["Forwarding and IMAP", "Forwarding", "Chuy\u1ec3n ti\u1ebfp và IMAP", "Chuy\u1ec3n ti\u1ebfp"]:
+            for txt in ["Forwarding and IMAP", "Forwarding", "Chuyen tiep va IMAP", "Chuyen tiep"]:
                 try:
                     el = modal.get_by_text(txt, exact=False).first
                     await el.wait_for(state="visible", timeout=8000)
@@ -272,19 +259,15 @@ async def create_rule(page, dest, acc):
         except Exception as e:
             print(f"    search nav failed: {str(e)[:80]}", flush=True)
             return False
-        # Check for verification - check FULL PAGE, not just modal (message may be in overlay)
-        # Handle both flows Joseph described:
-        # 1. Sometimes just asks for recovery email ID (no code)
-        # 2. Sometimes sends a code to recovery email
         try:
-            # Check page text (broader than modal)
             page_text = await page.locator("body").inner_text(timeout=8000)
             lower_text = page_text.lower()
             print(f"    page check for verification...", flush=True)
             if "verify your account" in lower_text or "verify to forward" in lower_text:
                 print(f"    verification required (found in page)", flush=True)
                 recovery_email = acc.get('recovery_email', '')
-                # Flow 1: Check if it's asking for email address - search whole page
+                refresh_token = acc.get('refresh_token', '')
+                client_id = acc.get('client_id', '')
                 email_input = None
                 for sel in [
                     lambda: page.locator('input[type="email"]').first,
@@ -315,20 +298,40 @@ async def create_rule(page, dest, acc):
                             break
                         except Exception:
                             continue
-                    await page.wait_for_timeout(3000)
+                    await page.wait_for_timeout(5000)
                 else:
-                    print(f"    no email input found, checking for code flow", flush=True)
-                    # Flow 2: code input - needs custom inbox access (s2proxy/supemail)
-                    # Log clearly for now
-                    print(f"    BLOCKED: code verification needs inbox access", flush=True)
+                    print(f"    no email input found, going to code flow", flush=True)
+                code = None
+                if refresh_token and client_id:
+                    print(f"    polling recovery inbox for verification code", flush=True)
+                    code = await asyncio.to_thread(
+                        get_verification_code_from_gmail, refresh_token, client_id, 180)
+                if code:
+                    if await fill_verification_code(page, page.locator("body"), code):
+                        await page.wait_for_timeout(5000)
+                        chk = (await page.locator("body").inner_text(timeout=8000)).lower()
+                        if "verify your account" in chk or "verify to forward" in chk:
+                            print(f"    verification still blocking after code", flush=True)
+                            return False
+                        print(f"    verification cleared, continuing", flush=True)
+                    else:
+                        print(f"    could not enter verification code", flush=True)
+                        return False
+                else:
+                    print(f"    BLOCKED: no verification code available", flush=True)
                     return False
             else:
                 print(f"    no verification prompt detected", flush=True)
         except Exception as e:
             print(f"    verification check: {str(e)[:60]}", flush=True)
             pass
-        # Now should be on Forwarding page - find enable toggle (could be switch, not checkbox)
-        # Dismiss any overlay first
+        try:
+            wall = (await page.locator("body").inner_text(timeout=8000)).lower()
+            if "verify your account" in wall or "verify to forward" in wall:
+                print(f"    verification wall still present, cannot create rule", flush=True)
+                return False
+        except Exception:
+            pass
         try:
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(1000)
@@ -357,14 +360,11 @@ async def create_rule(page, dest, acc):
             except Exception:
                 pass
             return False
-        # Check state and enable if needed
         try:
-            # For switch: check aria-checked
             checked = await enable_ctrl.get_attribute("aria-checked")
             if checked == "true":
                 print(f"    already enabled", flush=True)
             else:
-                # Try is_checked for checkbox
                 try:
                     if await enable_ctrl.is_checked():
                         print(f"    already enabled (checkbox)", flush=True)
@@ -379,13 +379,11 @@ async def create_rule(page, dest, acc):
         except Exception as e:
             print(f"    enable failed: {e}", flush=True)
             return False
-        # Fill address
         to_box = modal.locator('input[type="text"], input[type="email"]').first
         await to_box.wait_for(timeout=8000)
         await to_box.fill(dest)
         await page.wait_for_timeout(1500)
         print(f"    filled {dest}", flush=True)
-        # Keep a copy
         try:
             checkboxes = await modal.locator('input[type="checkbox"]').all()
             if len(checkboxes) > 1:
@@ -395,7 +393,6 @@ async def create_rule(page, dest, acc):
                     print(f"    keep-copy checked", flush=True)
         except Exception:
             pass
-        # Save
         save_btn = modal.get_by_role("button", name="Save").first
         await save_btn.wait_for(timeout=8000)
         await save_btn.click(timeout=10000)
@@ -404,144 +401,6 @@ async def create_rule(page, dest, acc):
         return True
     except Exception as e:
         print(f"    failed: {str(e)[:100]}", flush=True)
-        return False
-
-async def create_rule_via_settings(page, dest):
-    """Fallback: navigate via Settings gear UI."""
-    await page.goto("https://outlook.live.com/mail/0/",
-                    timeout=60000, wait_until="domcontentloaded")
-    await page.wait_for_timeout(8000)
-    try:
-        # Debug: dump top bar HTML to find Settings gear
-        try:
-            # Try multiple top bar selectors
-            for sel in ['header', '[role="banner"]', '#topbar', '.topbar']:
-                try:
-                    el = page.locator(sel).first
-                    if await el.count() > 0:
-                        html = await el.inner_html()
-                        print(f"    topbar ({sel}) HTML: {html[:800]}", flush=True)
-                        break
-                except Exception:
-                    continue
-            # Also dump all buttons with their labels
-            all_btns = await page.locator('button').all()
-            print(f"    total buttons on page: {len(all_btns)}", flush=True)
-            for i, b in enumerate(all_btns[:20]):
-                try:
-                    lbl = await b.get_attribute("aria-label") or await b.get_attribute("title") or await b.inner_text() or "?"
-                    lbl = lbl.strip()[:40]
-                    if lbl and lbl != "?":
-                        print(f"    btn {i}: {lbl}", flush=True)
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"    button debug failed: {e}", flush=True)
-        settings_btn = None
-        for selector in [
-            lambda: page.get_by_role("button", name="Settings"),
-            lambda: page.get_by_role("button", name="Cài đặt"),
-        ]:
-            try:
-                btns = selector()
-                cnt = await btns.count()
-                for i in range(cnt):
-                    b = btns.nth(i)
-                    try:
-                        lbl = await b.get_attribute("aria-label") or ""
-                        # Skip account/profile buttons
-                        if "@" in lbl or "account" in lbl.lower() or "tài khoản" in lbl.lower():
-                            print(f"    skip account btn: {lbl[:40]}", flush=True)
-                            continue
-                        await b.wait_for(timeout=3000)
-                        settings_btn = b
-                        print(f"    using Settings: {lbl[:40]}", flush=True)
-                        break
-                    except Exception:
-                        continue
-                if settings_btn:
-                    break
-            except Exception:
-                continue
-        if not settings_btn:
-            print(f"    could not find Settings button", flush=True)
-            return False
-        await settings_btn.click(timeout=10000)
-        await page.wait_for_timeout(3000)
-        # Dump what's in the settings panel for debugging
-        try:
-            panel_text = await page.locator('[role="dialog"], [role="complementary"], aside').first.inner_text(timeout=5000)
-            print(f"    settings panel text: {panel_text[:300]}", flush=True)
-        except Exception:
-            pass
-        # Try View all Outlook settings (English + Vietnamese)
-        for txt in ["View all Outlook settings", "Xem tất cả", "Cài đặt Outlook"]:
-            try:
-                view_all = page.get_by_text(txt, exact=False).first
-                await view_all.wait_for(timeout=3000)
-                await view_all.click(timeout=8000)
-                await page.wait_for_timeout(4000)
-                print(f"    clicked: {txt}", flush=True)
-                break
-            except Exception:
-                continue
-        # Try search (English + Vietnamese)
-        try:
-            for placeholder in ["Search Outlook settings", "Search settings", "Search", "Tìm kiếm", "Tìm"]:
-                try:
-                    search_box = page.get_by_placeholder(placeholder).first
-                    await search_box.wait_for(timeout=3000)
-                    await search_box.fill("forwarding")
-                    await page.wait_for_timeout(3000)
-                    break
-                except Exception:
-                    continue
-            # Click Forwarding result (English + Vietnamese)
-            fwd_clicked = False
-            for txt in ["Forwarding", "Chuyển tiếp"]:
-                try:
-                    fwd_result = page.get_by_text(txt, exact=False).first
-                    await fwd_result.click(timeout=5000)
-                    await page.wait_for_timeout(4000)
-                    print(f"    clicked: {txt}", flush=True)
-                    fwd_clicked = True
-                    break
-                except Exception:
-                    continue
-            if not fwd_clicked:
-                print(f"    settings search failed", flush=True)
-                return False
-        except Exception as e:
-            print(f"    settings search failed", flush=True)
-            return False
-        # Enable forwarding
-        enable_cb = page.locator('input[type="checkbox"]').first
-        await enable_cb.wait_for(timeout=10000)
-        if not await enable_cb.is_checked():
-            await enable_cb.click(timeout=10000)
-            await page.wait_for_timeout(2000)
-        to_box = page.locator('input[type="text"]').first
-        await to_box.wait_for(timeout=8000)
-        await to_box.fill(dest)
-        await page.wait_for_timeout(1500)
-        save_btn = None
-        for name in ["Save", "Lưu"]:
-            try:
-                btn = page.get_by_role("button", name=name).first
-                await btn.wait_for(timeout=5000)
-                save_btn = btn
-                break
-            except Exception:
-                continue
-        if not save_btn:
-            print(f"    no Save button found", flush=True)
-            return False
-        await save_btn.click(timeout=10000)
-        await page.wait_for_timeout(5000)
-        print(f"    forwarding saved", flush=True)
-        return True
-    except Exception as e:
-        print(f"    settings UI failed: {str(e)[:80]}", flush=True)
         return False
 
 async def run_one(idx, acc, proxy_cfg, sem, progress):
@@ -580,8 +439,6 @@ async def run_one(idx, acc, proxy_cfg, sem, progress):
         save_progress(progress)
 
 async def main():
-    # Try without proxy first (proxy-cheap gateway is unreliable)
-    # Set USE_PROXY=1 to enable proxy
     use_proxy = os.environ.get("USE_PROXY", "0") == "1"
     puser = os.environ.get("PROXY_USER", "")
     ppass = os.environ.get("PROXY_PASS", "")
@@ -609,6 +466,8 @@ async def main():
     await asyncio.gather(*(gated(i, a) for i, a in subset))
     done = sum(1 for v in progress.values() if v == "done")
     print(f"FINISHED: {done} done / {len(progress)} attempted", flush=True)
+    if done == 0 and len(progress) > 0:
+        sys.exit(1)
 
 if __name__ == "__main__":
     asyncio.run(main())
