@@ -104,56 +104,42 @@ async def create_rule(page, dest):
         except Exception:
             print(f"    no optionsModal found", flush=True)
             return False
-        # Look for search box inside modal
-        search = None
-        for sel in [
-            lambda: modal.locator('input[type="search"]').first,
-            lambda: modal.locator('input[placeholder*="Search" i]').first,
-            lambda: modal.get_by_placeholder("Search Outlook settings").first,
-        ]:
+        # Navigate via left nav: Mail > Forwarding and IMAP (more reliable than search)
+        try:
+            # Dismiss any overlay
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(1000)
+            # Click Mail in left nav
+            mail_nav = modal.get_by_role("button", name="Mail", exact=True).first
             try:
-                el = sel()
-                await el.wait_for(timeout=5000)
-                search = el
-                print(f"    found search box", flush=True)
-                break
+                await mail_nav.wait_for(timeout=5000)
             except Exception:
-                continue
-        if search:
-            await search.fill("forwarding")
-            await page.wait_for_timeout(3000)
-            print(f"    searched forwarding", flush=True)
-            # Click the Forwarding result
-            try:
-                # The search results appear as buttons/links
-                result = modal.get_by_text("Forwarding", exact=False).first
-                await result.wait_for(timeout=5000)
-                await result.click(timeout=8000)
-                await page.wait_for_timeout(4000)
-                print(f"    clicked Forwarding result", flush=True)
-            except Exception as e:
-                print(f"    no Forwarding in search results: {e}", flush=True)
-                # Dump modal text to see what's there
-                try:
-                    txt = await modal.inner_text()
-                    print(f"    modal text: {txt[:500]}", flush=True)
-                except Exception:
-                    pass
-                return False
-        else:
-            # No search - try navigating via left nav: Mail > Forwarding
-            print(f"    no search box, trying nav", flush=True)
-            try:
+                # Try as text
                 mail_nav = modal.get_by_text("Mail", exact=True).first
-                await mail_nav.click(timeout=5000)
-                await page.wait_for_timeout(2000)
-                fwd_nav = modal.get_by_text("Forwarding", exact=False).first
-                await fwd_nav.click(timeout=5000)
-                await page.wait_for_timeout(3000)
-                print(f"    navigated to Forwarding", flush=True)
-            except Exception as e:
-                print(f"    nav failed: {e}", flush=True)
+                await mail_nav.wait_for(timeout=5000)
+            await mail_nav.click(timeout=8000)
+            await page.wait_for_timeout(2000)
+            print(f"    clicked Mail nav", flush=True)
+            # Click Forwarding and IMAP
+            fwd_nav = None
+            for txt in ["Forwarding and IMAP", "Forwarding"]:
+                try:
+                    el = modal.get_by_text(txt, exact=False).first
+                    await el.wait_for(timeout=5000)
+                    fwd_nav = el
+                    print(f"    found nav: {txt}", flush=True)
+                    break
+                except Exception:
+                    continue
+            if not fwd_nav:
+                print(f"    no Forwarding nav found", flush=True)
                 return False
+            await fwd_nav.click(timeout=8000)
+            await page.wait_for_timeout(4000)
+            print(f"    clicked Forwarding nav", flush=True)
+        except Exception as e:
+            print(f"    nav failed: {str(e)[:80]}", flush=True)
+            return False
         # Now should be on Forwarding page - find enable toggle (could be switch, not checkbox)
         # Dismiss any overlay first
         try:
