@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install playwright cryptography
-          playwright install chromium --with-deps
+          playwright install chromium firefox --with-deps
       - name: Decrypt accounts
         run: |
           python3 -c "
