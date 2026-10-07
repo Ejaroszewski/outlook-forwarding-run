@@ -104,39 +104,74 @@ async def create_rule(page, dest):
         except Exception:
             print(f"    no optionsModal found", flush=True)
             return False
-        # Navigate via left nav: Mail > Forwarding and IMAP (more reliable than search)
+        # Navigate via left nav: Mail > Forwarding and IMAP
+        # The modal content loads async - wait for nav items
         try:
-            # Dismiss any overlay
             await page.keyboard.press("Escape")
-            await page.wait_for_timeout(1000)
-            # Click Mail in left nav
-            mail_nav = modal.get_by_role("button", name="Mail", exact=True).first
-            try:
-                await mail_nav.wait_for(timeout=5000)
-            except Exception:
-                # Try as text
-                mail_nav = modal.get_by_text("Mail", exact=True).first
-                await mail_nav.wait_for(timeout=5000)
-            await mail_nav.click(timeout=8000)
             await page.wait_for_timeout(2000)
-            print(f"    clicked Mail nav", flush=True)
-            # Click Forwarding and IMAP
-            fwd_nav = None
-            for txt in ["Forwarding and IMAP", "Forwarding"]:
+            # Wait for Mail text to appear in modal (longer timeout)
+            mail_found = False
+            for attempt in range(3):
                 try:
-                    el = modal.get_by_text(txt, exact=False).first
-                    await el.wait_for(timeout=5000)
-                    fwd_nav = el
-                    print(f"    found nav: {txt}", flush=True)
-                    break
-                except Exception:
-                    continue
-            if not fwd_nav:
-                print(f"    no Forwarding nav found", flush=True)
+                    # Try multiple selector strategies
+                    mail_el = None
+                    for sel in [
+                        lambda: modal.get_by_text("Mail", exact=True).first,
+                        lambda: modal.locator('button:has-text("Mail")').first,
+                        lambda: modal.locator('[role="tab"]:has-text("Mail")').first,
+                    ]:
+                        try:
+                            el = sel()
+                            await el.wait_for(state="visible", timeout=10000)
+                            mail_el = el
+                            break
+                        except Exception:
+                            continue
+                    if mail_el:
+                        # Try JS click to avoid overlay issues
+                        try:
+                            await mail_el.click(timeout=8000)
+                        except Exception:
+                            await mail_el.evaluate("el => el.click()")
+                        await page.wait_for_timeout(3000)
+                        print(f"    clicked Mail nav", flush=True)
+                        mail_found = True
+                        break
+                except Exception as e:
+                    print(f"    Mail nav attempt {attempt+1} failed: {str(e)[:60]}", flush=True)
+                    await page.wait_for_timeout(2000)
+            if not mail_found:
+                print(f"    could not find Mail nav", flush=True)
                 return False
-            await fwd_nav.click(timeout=8000)
-            await page.wait_for_timeout(4000)
-            print(f"    clicked Forwarding nav", flush=True)
+            # Click Forwarding and IMAP
+            fwd_found = False
+            for attempt in range(3):
+                try:
+                    fwd_el = None
+                    for txt in ["Forwarding and IMAP", "Forwarding"]:
+                        try:
+                            el = modal.get_by_text(txt, exact=False).first
+                            await el.wait_for(state="visible", timeout=8000)
+                            fwd_el = el
+                            print(f"    found nav: {txt}", flush=True)
+                            break
+                        except Exception:
+                            continue
+                    if fwd_el:
+                        try:
+                            await fwd_el.click(timeout=8000)
+                        except Exception:
+                            await fwd_el.evaluate("el => el.click()")
+                        await page.wait_for_timeout(4000)
+                        print(f"    clicked Forwarding nav", flush=True)
+                        fwd_found = True
+                        break
+                except Exception as e:
+                    print(f"    Fwd nav attempt {attempt+1} failed", flush=True)
+                    await page.wait_for_timeout(2000)
+            if not fwd_found:
+                print(f"    could not find Forwarding nav", flush=True)
+                return False
         except Exception as e:
             print(f"    nav failed: {str(e)[:80]}", flush=True)
             return False
