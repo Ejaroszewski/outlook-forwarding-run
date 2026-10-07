@@ -8,6 +8,9 @@ on:
       limit:
         description: 'Number of accounts to process'
         default: '1000'
+      accounts_file:
+        description: 'Encrypted accounts file'
+        default: 'accounts.csv.enc'
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -28,7 +31,7 @@ jobs:
           import os
           key = os.environ['ACCOUNTS_KEY'].encode()
           f = Fernet(key)
-          data = f.decrypt(open('accounts.csv.enc','rb').read())
+          data = f.decrypt(open('${{ inputs.accounts_file }}','rb').read())
           open('accounts.csv','wb').write(data)
           print('decrypted', len(data), 'bytes')
           "
