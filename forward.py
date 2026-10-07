@@ -9,7 +9,7 @@ GitHub Actions runner: Outlook forwarding via local Playwright + proxy.
 import asyncio, csv, json, os, sys, re, time, random
 import urllib.request, urllib.parse
 
-DESTS = [f"ranksoldier{i}@gmail.com" for i in range(2, 12)]
+DESTS = [f"ranksoldier{i}@gmail.com" for i in range(2, 12)] + ["ranksoldier12@gmail.com"]
 RULE_NAME = "AutoForward-All"
 PROXY_HOST = "thehub.proxy-cheap.com"
 PROXY_PORT = "8080"
