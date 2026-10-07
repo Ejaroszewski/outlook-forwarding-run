@@ -104,77 +104,61 @@ async def create_rule(page, dest):
         except Exception:
             print(f"    no optionsModal found", flush=True)
             return False
-        # Navigate via left nav: Mail > Forwarding and IMAP
-        # The modal content loads async - wait for nav items
+        # Use search box in modal (more reliable than nav clicking)
+        # The modal has a search box at the top
         try:
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(2000)
-            # Wait for Mail text to appear in modal (longer timeout)
-            mail_found = False
-            for attempt in range(3):
+            search = None
+            for sel in [
+                lambda: modal.locator('input[type="search"]').first,
+                lambda: modal.locator('input[placeholder*="Search" i]').first,
+            ]:
                 try:
-                    # Try multiple selector strategies
-                    mail_el = None
-                    for sel in [
-                        lambda: modal.get_by_text("Mail", exact=True).first,
-                        lambda: modal.locator('button:has-text("Mail")').first,
-                        lambda: modal.locator('[role="tab"]:has-text("Mail")').first,
-                    ]:
-                        try:
-                            el = sel()
-                            await el.wait_for(state="visible", timeout=10000)
-                            mail_el = el
-                            break
-                        except Exception:
-                            continue
-                    if mail_el:
-                        # Try JS click to avoid overlay issues
-                        try:
-                            await mail_el.click(timeout=8000)
-                        except Exception:
-                            await mail_el.evaluate("el => el.click()")
-                        await page.wait_for_timeout(3000)
-                        print(f"    clicked Mail nav", flush=True)
-                        mail_found = True
-                        break
-                except Exception as e:
-                    print(f"    Mail nav attempt {attempt+1} failed: {str(e)[:60]}", flush=True)
-                    await page.wait_for_timeout(2000)
-            if not mail_found:
-                print(f"    could not find Mail nav", flush=True)
+                    el = sel()
+                    await el.wait_for(state="visible", timeout=10000)
+                    search = el
+                    print(f"    found search box", flush=True)
+                    break
+                except Exception:
+                    continue
+            if not search:
+                print(f"    no search box found", flush=True)
                 return False
-            # Click Forwarding and IMAP
-            fwd_found = False
-            for attempt in range(3):
+            await search.fill("forwarding")
+            await page.wait_for_timeout(3000)
+            print(f"    searched forwarding", flush=True)
+            # Click the Forwarding result
+            result = None
+            for txt in ["Forwarding and IMAP", "Forwarding"]:
                 try:
-                    fwd_el = None
-                    for txt in ["Forwarding and IMAP", "Forwarding"]:
-                        try:
-                            el = modal.get_by_text(txt, exact=False).first
-                            await el.wait_for(state="visible", timeout=8000)
-                            fwd_el = el
-                            print(f"    found nav: {txt}", flush=True)
-                            break
-                        except Exception:
-                            continue
-                    if fwd_el:
-                        try:
-                            await fwd_el.click(timeout=8000)
-                        except Exception:
-                            await fwd_el.evaluate("el => el.click()")
-                        await page.wait_for_timeout(4000)
-                        print(f"    clicked Forwarding nav", flush=True)
-                        fwd_found = True
-                        break
-                except Exception as e:
-                    print(f"    Fwd nav attempt {attempt+1} failed", flush=True)
-                    await page.wait_for_timeout(2000)
-            if not fwd_found:
-                print(f"    could not find Forwarding nav", flush=True)
+                    el = modal.get_by_text(txt, exact=False).first
+                    await el.wait_for(state="visible", timeout=8000)
+                    result = el
+                    print(f"    found result: {txt}", flush=True)
+                    break
+                except Exception:
+                    continue
+            if not result:
+                print(f"    no Forwarding in search results", flush=True)
                 return False
+            try:
+                await result.click(timeout=8000)
+            except Exception:
+                await result.evaluate("el => el.click()")
+            await page.wait_for_timeout(5000)
+            print(f"    clicked Forwarding result", flush=True)
         except Exception as e:
-            print(f"    nav failed: {str(e)[:80]}", flush=True)
+            print(f"    search nav failed: {str(e)[:80]}", flush=True)
             return False
+        # Check for verification blocker
+        try:
+            modal_text = await modal.inner_text(timeout=5000)
+            if "verify your account" in modal_text.lower() or "sign in and verify" in modal_text.lower():
+                print(f"    BLOCKED: account needs verification", flush=True)
+                return False
+        except Exception:
+            pass
         # Now should be on Forwarding page - find enable toggle (could be switch, not checkbox)
         # Dismiss any overlay first
         try:
