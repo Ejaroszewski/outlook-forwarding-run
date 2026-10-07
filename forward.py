@@ -94,7 +94,28 @@ async def create_rule(page, dest):
     if RULE_NAME in await page.content():
         return True
     try:
-        await page.get_by_role("button", name="Add new rule").first.click(timeout=30000)
+        # Try multiple selectors for the "Add new rule" button
+        add_btn = None
+        for selector in [
+            lambda: page.get_by_role("button", name="Add new rule").first,
+            lambda: page.get_by_text("Add new rule", exact=False).first,
+            lambda: page.locator('button:has-text("Add new rule")').first,
+            lambda: page.locator('[data-testid="add-rule-button"]').first,
+        ]:
+            try:
+                btn = selector()
+                await btn.wait_for(timeout=8000)
+                add_btn = btn
+                break
+            except Exception:
+                continue
+        if not add_btn:
+            print(f"    could not find Add new rule button", flush=True)
+            # Debug: save page title and snippet
+            print(f"    page title: {await page.title()}", flush=True)
+            print(f"    page url: {page.url}", flush=True)
+            return False
+        await add_btn.click(timeout=15000)
         await page.wait_for_timeout(2000)
         dialog = page.get_by_role("dialog").first
         name_box = dialog.get_by_label("Rule name")
