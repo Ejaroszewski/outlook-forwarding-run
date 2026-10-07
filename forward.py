@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-GitHub Actions runner: Outlook forwarding via Scrapeless cloud browser.
-- Uses Scrapeless SDK to create sessions (works from GitHub network).
+GitHub Actions runner: Outlook forwarding via local Playwright + proxy.
+- Launches Chromium directly on the runner (no Scrapeless needed).
 - 10 inboxes x 100 accounts. Progress in progress.json.
-- Env: SCRAPELESS_KEY, PROXY_USER, PROXY_PASS
+- Env: PROXY_USER, PROXY_PASS
 - Args: --start N --limit N
 """
-import asyncio, csv, json, os, sys, urllib.parse
+import asyncio, csv, json, os, sys
 
 DESTS = [f"ranksoldier{i}@gmail.com" for i in range(2, 12)]
 RULE_NAME = "AutoForward-All"
@@ -65,7 +65,6 @@ async def login(page, acc):
             await page.wait_for_timeout(4000)
         except Exception:
             pass
-    # FIDO skip attempts
     if "fido" in page.url:
         for txt in ("Skip", "Cancel", "Not now"):
             try:
@@ -124,10 +123,8 @@ async def create_rule(page, dest):
     await page.wait_for_timeout(5000)
     return RULE_NAME in await page.content()
 
-async def run_one(idx, acc, key, proxy_url, sem, progress):
+async def run_one(idx, acc, proxy_cfg, sem, progress):
     from playwright.async_api import async_playwright
-    from scrapeless import Scrapeless
-    from scrapeless.types import ICreateBrowser
     email = acc["email"]
     dest = dest_for(idx)
     async with sem:
@@ -135,23 +132,18 @@ async def run_one(idx, acc, key, proxy_url, sem, progress):
             return
         print(f"[{idx}] {email} -> {dest}", flush=True)
         try:
-            client = Scrapeless({"api_key": key})
-            cfg = ICreateBrowser(
-                session_name=f"acct_{idx}",
-                session_ttl=600,
-                proxy_country="US",
-            )
-            # add custom proxy if provided
-            session = client.browser.create(cfg).__dict__
-            ws_url = session.get("browser_ws_endpoint", "")
-            if proxy_url:
-                # append proxy_url param
-                sep = "&" if "?" in ws_url else "?"
-                ws_url = ws_url + sep + "proxy_url=" + urllib.parse.quote(proxy_url, safe="")
             async with async_playwright() as p:
-                browser = await p.chromium.connect_over_cdp(ws_url, timeout=90000)
-                ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
-                page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+                browser = await p.chromium.launch(
+                    headless=True,
+                    proxy=proxy_cfg,
+                    args=["--disable-blink-features=AutomationControlled"],
+                )
+                ctx = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    viewport={"width": 1366, "height": 768},
+                    locale="en-US",
+                )
+                page = await ctx.new_page()
                 ok = await login(page, acc)
                 if not ok:
                     progress[email] = "login_failed"
@@ -167,10 +159,15 @@ async def run_one(idx, acc, key, proxy_url, sem, progress):
         save_progress(progress)
 
 async def main():
-    key = os.environ.get("SCRAPELESS_KEY", "")
     puser = os.environ.get("PROXY_USER", "")
     ppass = os.environ.get("PROXY_PASS", "")
-    proxy_url = f"http://{puser}:{ppass}@{PROXY_HOST}:{PROXY_PORT}" if puser else ""
+    proxy_cfg = None
+    if puser:
+        proxy_cfg = {
+            "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
+            "username": puser,
+            "password": ppass,
+        }
     accounts = load_accounts()
     args = sys.argv[1:]
     limit = int(args[args.index("--limit") + 1]) if "--limit" in args else len(accounts)
@@ -181,7 +178,7 @@ async def main():
     sem = asyncio.Semaphore(2)
     async def gated(i, a):
         await asyncio.sleep((i % 2) * 15)
-        await run_one(i, a, key, proxy_url, sem, progress)
+        await run_one(i, a, proxy_cfg, sem, progress)
     await asyncio.gather(*(gated(i, a) for i, a in subset))
     done = sum(1 for v in progress.values() if v == "done")
     print(f"FINISHED: {done} done / {len(progress)} attempted", flush=True)
