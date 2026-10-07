@@ -86,105 +86,57 @@ async def login(page, acc):
     return True
 
 async def create_rule(page, dest):
-    """Use Joseph's direct forwarding URL: outlook.live.com/mail/options/mail/forwarding"""
-    await page.goto("https://outlook.live.com/mail/options/mail/forwarding",
+    """Navigate via Settings gear -> Quick Settings panel -> View all -> Forwarding."""
+    await page.goto("https://outlook.live.com/mail/0/",
                     timeout=60000, wait_until="domcontentloaded")
-    await page.wait_for_timeout(15000)
-    print(f"    forwarding URL loaded: title={await page.title()}", flush=True)
+    await page.wait_for_timeout(10000)
     try:
-        body_text = await page.locator("body").inner_text(timeout=10000)
-        print(f"    body preview: {body_text[:600]}", flush=True)
-    except Exception as e:
-        print(f"    body dump failed: {e}", flush=True)
-    if "microsoft.com" in page.url and "outlook" not in page.url:
-        print(f"    bounced to microsoft.com", flush=True)
-        return False
-    try:
-        # Look for Enable forwarding checkbox (English + Vietnamese)
-        enable_cb = None
-        for sel in [
-            lambda: page.get_by_label("Enable forwarding", exact=False).first,
-            lambda: page.get_by_label("Bật chuyển tiếp", exact=False).first,
-            lambda: page.get_by_text("Enable forwarding", exact=False).first,
-            lambda: page.get_by_text("Bật chuyển tiếp", exact=False).first,
-            lambda: page.locator('input[type="checkbox"]').first,
-        ]:
-            try:
-                el = sel()
-                await el.wait_for(timeout=8000)
-                enable_cb = el
-                print(f"    found enable checkbox", flush=True)
-                break
-            except Exception:
-                continue
-        if not enable_cb:
-            print(f"    no enable checkbox, dumping page", flush=True)
-            try:
-                text = await page.locator("body").inner_text()
-                print(f"    body: {text[:400]}", flush=True)
-            except Exception:
-                pass
-            return False
-        # Check if it's a checkbox and whether checked
+        # Find and click Settings gear (button 6 from debug)
+        settings_btn = page.get_by_role("button", name="Settings").first
+        await settings_btn.wait_for(timeout=10000)
+        await settings_btn.click(timeout=8000)
+        await page.wait_for_timeout(5000)
+        print(f"    clicked Settings gear", flush=True)
+        # Dump the Quick Settings panel HTML
         try:
-            if await enable_cb.is_checked():
-                print(f"    already enabled", flush=True)
-            else:
-                await enable_cb.click(timeout=8000)
-                await page.wait_for_timeout(2000)
-                print(f"    enabled forwarding", flush=True)
-        except Exception:
-            # Might be a label, try clicking
-            await enable_cb.click(timeout=8000)
-            await page.wait_for_timeout(2000)
-        # Find address input
-        to_box = None
-        for sel in [
-            lambda: page.locator('input[type="text"]').first,
-            lambda: page.locator('input[type="email"]').first,
-            lambda: page.get_by_placeholder("Email address", exact=False).first,
-        ]:
+            # The panel is usually a div on the right side
+            panels = await page.locator('[role="dialog"], [role="complementary"], aside, [data-testid*="settings" i]').all()
+            print(f"    found {len(panels)} potential panels", flush=True)
+            for i, p in enumerate(panels[:3]):
+                try:
+                    html = await p.inner_html()
+                    print(f"    panel {i} HTML: {html[:1000]}", flush=True)
+                except Exception as e:
+                    print(f"    panel {i} failed: {e}", flush=True)
+        except Exception as e:
+            print(f"    panel dump failed: {e}", flush=True)
+        # Look for "View all" link (various texts)
+        view_all = None
+        for txt in ["View all Outlook settings", "See all settings", "View all settings", "All settings"]:
             try:
-                el = sel()
-                await el.wait_for(timeout=8000)
-                to_box = el
+                el = page.get_by_text(txt, exact=False).first
+                await el.wait_for(timeout=3000)
+                view_all = el
+                print(f"    found link: {txt}", flush=True)
                 break
             except Exception:
                 continue
-        if not to_box:
-            print(f"    no address input found", flush=True)
-            return False
-        await to_box.fill(dest)
-        await page.wait_for_timeout(1500)
-        print(f"    filled {dest}", flush=True)
-        # Keep a copy
-        try:
-            keep = page.get_by_text("Keep a copy", exact=False).first
-            await keep.wait_for(timeout=3000)
-            # Find associated checkbox
-            keep_cb = page.locator('input[type="checkbox"]').nth(1)
-            if await keep_cb.count() > 0 and not await keep_cb.is_checked():
-                await keep_cb.click(timeout=5000)
-                print(f"    keep-a-copy checked", flush=True)
-        except Exception:
-            pass
-        # Save
-        saved = False
-        for name in ["Save", "Lưu"]:
+        if view_all:
+            await view_all.click(timeout=8000)
+            await page.wait_for_timeout(5000)
+            print(f"    clicked View all", flush=True)
+            # Now in full settings dialog - search for forwarding
             try:
-                btn = page.get_by_role("button", name=name).first
-                await btn.wait_for(timeout=5000)
-                await btn.click(timeout=10000)
-                await page.wait_for_timeout(5000)
-                print(f"    clicked Save", flush=True)
-                saved = True
-                break
-            except Exception:
-                continue
-        if not saved:
-            print(f"    no Save button", flush=True)
-            return False
-        return True
+                search = page.locator('input[type="search"], input[placeholder*="Search" i]').first
+                await search.wait_for(timeout=8000)
+                await search.fill("forwarding")
+                await page.wait_for_timeout(3000)
+                print(f"    searched forwarding", flush=True)
+            except Exception as e:
+                print(f"    search failed: {e}", flush=True)
+        else:
+            print(f"    no View all link found", flush=True)
+        return False  # Debug only for now
     except Exception as e:
         print(f"    failed: {str(e)[:80]}", flush=True)
         return False
