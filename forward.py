@@ -156,18 +156,31 @@ async def create_rule_via_settings(page, dest):
                     timeout=60000, wait_until="domcontentloaded")
     await page.wait_for_timeout(8000)
     try:
-        # Debug: list all header buttons
+        # Debug: dump top bar HTML to find Settings gear
         try:
-            hbtns = await page.locator('header button').all()
-            print(f"    header has {len(hbtns)} buttons", flush=True)
-            for i, b in enumerate(hbtns):
+            # Try multiple top bar selectors
+            for sel in ['header', '[role="banner"]', '#topbar', '.topbar']:
                 try:
-                    lbl = await b.get_attribute("aria-label") or await b.get_attribute("title") or "?"
-                    print(f"    hbtn {i}: {lbl[:50]}", flush=True)
+                    el = page.locator(sel).first
+                    if await el.count() > 0:
+                        html = await el.inner_html()
+                        print(f"    topbar ({sel}) HTML: {html[:800]}", flush=True)
+                        break
+                except Exception:
+                    continue
+            # Also dump all buttons with their labels
+            all_btns = await page.locator('button').all()
+            print(f"    total buttons on page: {len(all_btns)}", flush=True)
+            for i, b in enumerate(all_btns[:20]):
+                try:
+                    lbl = await b.get_attribute("aria-label") or await b.get_attribute("title") or await b.inner_text() or "?"
+                    lbl = lbl.strip()[:40]
+                    if lbl and lbl != "?":
+                        print(f"    btn {i}: {lbl}", flush=True)
                 except Exception:
                     pass
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    button debug failed: {e}", flush=True)
         settings_btn = None
         for selector in [
             lambda: page.get_by_role("button", name="Settings"),
