@@ -156,26 +156,42 @@ async def create_rule_via_settings(page, dest):
                     timeout=60000, wait_until="domcontentloaded")
     await page.wait_for_timeout(8000)
     try:
-        settings_btn = None
-        for selector in [
-            lambda: page.get_by_role("button", name="Settings").first,
-            lambda: page.get_by_role("button", name="Cài đặt").first,
-            lambda: page.locator('button[aria-label*="Settings" i]').first,
-            lambda: page.locator('button[aria-label*="Cài đặt" i]').first,
-            lambda: page.locator('header button').last,
-        ]:
-            try:
-                el = selector()
-                await el.wait_for(timeout=8000)
-                # Skip profile/avatar button
+        # Debug: list all header buttons
+        try:
+            hbtns = await page.locator('header button').all()
+            print(f"    header has {len(hbtns)} buttons", flush=True)
+            for i, b in enumerate(hbtns):
                 try:
-                    if await el.locator('img').count() > 0:
-                        continue
+                    lbl = await b.get_attribute("aria-label") or await b.get_attribute("title") or "?"
+                    print(f"    hbtn {i}: {lbl[:50]}", flush=True)
                 except Exception:
                     pass
-                settings_btn = el
-                print(f"    found Settings button", flush=True)
-                break
+        except Exception:
+            pass
+        settings_btn = None
+        for selector in [
+            lambda: page.get_by_role("button", name="Settings"),
+            lambda: page.get_by_role("button", name="Cài đặt"),
+        ]:
+            try:
+                btns = selector()
+                cnt = await btns.count()
+                for i in range(cnt):
+                    b = btns.nth(i)
+                    try:
+                        lbl = await b.get_attribute("aria-label") or ""
+                        # Skip account/profile buttons
+                        if "@" in lbl or "account" in lbl.lower() or "tài khoản" in lbl.lower():
+                            print(f"    skip account btn: {lbl[:40]}", flush=True)
+                            continue
+                        await b.wait_for(timeout=3000)
+                        settings_btn = b
+                        print(f"    using Settings: {lbl[:40]}", flush=True)
+                        break
+                    except Exception:
+                        continue
+                if settings_btn:
+                    break
             except Exception:
                 continue
         if not settings_btn:
