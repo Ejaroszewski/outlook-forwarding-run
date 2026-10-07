@@ -86,63 +86,92 @@ async def login(page, acc):
     return True
 
 async def create_rule(page, dest):
-    await page.goto("https://outlook.live.com/mail/0/options/mail/rules",
+    """Use Settings > Mail > Forwarding (simpler than Rules page)."""
+    await page.goto("https://outlook.live.com/mail/0/options/mail/forwarding",
                     timeout=60000, wait_until="domcontentloaded")
     await page.wait_for_timeout(8000)
     if "microsoft.com" in page.url:
+        print(f"    forwarding page bounced to microsoft.com", flush=True)
         return False
-    if RULE_NAME in await page.content():
-        return True
     try:
-        # Try multiple selectors for the "Add new rule" button
-        add_btn = None
+        # Enable forwarding checkbox
+        enable_cb = None
         for selector in [
-            lambda: page.get_by_role("button", name="Add new rule").first,
-            lambda: page.get_by_text("Add new rule", exact=False).first,
-            lambda: page.locator('button:has-text("Add new rule")').first,
-            lambda: page.locator('[data-testid="add-rule-button"]').first,
+            lambda: page.get_by_label("Enable forwarding").first,
+            lambda: page.get_by_text("Enable forwarding", exact=False).first,
+            lambda: page.locator('input[type="checkbox"]').first,
         ]:
             try:
-                btn = selector()
-                await btn.wait_for(timeout=8000)
-                add_btn = btn
+                el = selector()
+                await el.wait_for(timeout=8000)
+                enable_cb = el
                 break
             except Exception:
                 continue
-        if not add_btn:
-            print(f"    could not find Add new rule button", flush=True)
-            # Debug: save page title and snippet
-            print(f"    page title: {await page.title()}", flush=True)
-            print(f"    page url: {page.url}", flush=True)
+        if not enable_cb:
+            print(f"    could not find Enable forwarding checkbox", flush=True)
+            print(f"    title: {await page.title()}, url: {page.url}", flush=True)
             return False
-        await add_btn.click(timeout=15000)
-        await page.wait_for_timeout(2000)
-        dialog = page.get_by_role("dialog").first
-        name_box = dialog.get_by_label("Rule name")
-        if not await name_box.count():
-            name_box = dialog.locator('input[type="text"]').first
-        await name_box.first.fill(RULE_NAME)
-        await dialog.get_by_role("combobox").first.click(timeout=10000)
-        await page.wait_for_timeout(1000)
-        await page.get_by_role("option", name="Apply to all messages").first.click(timeout=10000)
-        await page.wait_for_timeout(1000)
-        await dialog.get_by_role("combobox").nth(1).click(timeout=10000)
-        await page.wait_for_timeout(1000)
-        await page.get_by_role("option", name="Forward to").first.click(timeout=10000)
-        await page.wait_for_timeout(1500)
-        to_box = dialog.locator('input[type="text"]').last
+        # Check if already enabled
+        is_checked = await enable_cb.is_checked() if await enable_cb.get_attribute("type") == "checkbox" else False
+        if not is_checked:
+            await enable_cb.click(timeout=10000)
+            await page.wait_for_timeout(2000)
+        # Find the "Forward to" textbox
+        to_box = None
+        for selector in [
+            lambda: page.get_by_label("Forward my email to").first,
+            lambda: page.get_by_placeholder("Email address").first,
+            lambda: page.locator('input[type="text"]').first,
+            lambda: page.locator('input[type="email"]').first,
+        ]:
+            try:
+                el = selector()
+                await el.wait_for(timeout=8000)
+                to_box = el
+                break
+            except Exception:
+                continue
+        if not to_box:
+            print(f"    could not find forward-to textbox", flush=True)
+            return False
         await to_box.fill(dest)
         await page.wait_for_timeout(1500)
-        await to_box.press("Enter")
-        await page.wait_for_timeout(1000)
-        await dialog.get_by_role("button", name="Save").first.click(timeout=10000)
+        # Keep a copy checkbox
+        try:
+            keep_cb = page.get_by_label("Keep a copy of forwarded messages").first
+            await keep_cb.wait_for(timeout=5000)
+            if not await keep_cb.is_checked():
+                await keep_cb.click(timeout=5000)
+                await page.wait_for_timeout(1000)
+        except Exception:
+            print(f"    keep-a-copy checkbox not found, continuing", flush=True)
+        # Save button
+        save_btn = None
+        for selector in [
+            lambda: page.get_by_role("button", name="Save").first,
+            lambda: page.get_by_text("Save", exact=True).first,
+        ]:
+            try:
+                el = selector()
+                await el.wait_for(timeout=8000)
+                save_btn = el
+                break
+            except Exception:
+                continue
+        if not save_btn:
+            print(f"    could not find Save button", flush=True)
+            return False
+        await save_btn.click(timeout=10000)
         await page.wait_for_timeout(5000)
     except Exception as e:
-        print(f"    rule failed: {str(e)[:80]}", flush=True)
+        print(f"    forwarding setup failed: {str(e)[:80]}", flush=True)
         return False
+    # Verify by reloading and checking the value
     await page.reload(wait_until="domcontentloaded")
     await page.wait_for_timeout(5000)
-    return RULE_NAME in await page.content()
+    content = await page.content()
+    return dest in content
 
 async def run_one(idx, acc, proxy_cfg, sem, progress):
     from playwright.async_api import async_playwright
