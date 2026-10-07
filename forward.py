@@ -89,23 +89,29 @@ async def create_rule(page, dest):
     """Use Joseph's direct forwarding URL: outlook.live.com/mail/options/mail/forwarding"""
     await page.goto("https://outlook.live.com/mail/options/mail/forwarding",
                     timeout=60000, wait_until="domcontentloaded")
-    await page.wait_for_timeout(10000)
+    await page.wait_for_timeout(15000)
     print(f"    forwarding URL loaded: title={await page.title()}", flush=True)
-    print(f"    url: {page.url}", flush=True)
+    try:
+        body_text = await page.locator("body").inner_text(timeout=10000)
+        print(f"    body preview: {body_text[:600]}", flush=True)
+    except Exception as e:
+        print(f"    body dump failed: {e}", flush=True)
     if "microsoft.com" in page.url and "outlook" not in page.url:
         print(f"    bounced to microsoft.com", flush=True)
         return False
     try:
-        # Look for Enable forwarding checkbox
+        # Look for Enable forwarding checkbox (English + Vietnamese)
         enable_cb = None
         for sel in [
             lambda: page.get_by_label("Enable forwarding", exact=False).first,
+            lambda: page.get_by_label("Bật chuyển tiếp", exact=False).first,
             lambda: page.get_by_text("Enable forwarding", exact=False).first,
+            lambda: page.get_by_text("Bật chuyển tiếp", exact=False).first,
             lambda: page.locator('input[type="checkbox"]').first,
         ]:
             try:
                 el = sel()
-                await el.wait_for(timeout=10000)
+                await el.wait_for(timeout=8000)
                 enable_cb = el
                 print(f"    found enable checkbox", flush=True)
                 break
