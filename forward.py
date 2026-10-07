@@ -154,27 +154,58 @@ async def create_rule(page, dest):
             except Exception as e:
                 print(f"    nav failed: {e}", flush=True)
                 return False
-        # Now should be on Forwarding page - find enable checkbox
-        enable_cb = None
+        # Now should be on Forwarding page - find enable toggle (could be switch, not checkbox)
+        # Dismiss any overlay first
+        try:
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(1000)
+        except Exception:
+            pass
+        enable_ctrl = None
         for sel in [
+            lambda: modal.locator('[role="switch"]').first,
+            lambda: modal.locator('button[role="switch"]').first,
             lambda: modal.locator('input[type="checkbox"]').first,
             lambda: modal.get_by_label("Enable forwarding", exact=False).first,
         ]:
             try:
                 el = sel()
                 await el.wait_for(timeout=8000)
-                enable_cb = el
-                print(f"    found enable checkbox", flush=True)
+                enable_ctrl = el
+                print(f"    found enable control", flush=True)
                 break
             except Exception:
                 continue
-        if not enable_cb:
-            print(f"    no enable checkbox in modal", flush=True)
+        if not enable_ctrl:
+            print(f"    no enable control in modal, dumping modal text", flush=True)
+            try:
+                txt = await modal.inner_text()
+                print(f"    modal: {txt[:600]}", flush=True)
+            except Exception:
+                pass
             return False
-        if not await enable_cb.is_checked():
-            await enable_cb.click(timeout=8000)
-            await page.wait_for_timeout(2000)
-            print(f"    enabled", flush=True)
+        # Check state and enable if needed
+        try:
+            # For switch: check aria-checked
+            checked = await enable_ctrl.get_attribute("aria-checked")
+            if checked == "true":
+                print(f"    already enabled", flush=True)
+            else:
+                # Try is_checked for checkbox
+                try:
+                    if await enable_ctrl.is_checked():
+                        print(f"    already enabled (checkbox)", flush=True)
+                    else:
+                        await enable_ctrl.click(timeout=8000)
+                        await page.wait_for_timeout(2000)
+                        print(f"    enabled", flush=True)
+                except Exception:
+                    await enable_ctrl.click(timeout=8000)
+                    await page.wait_for_timeout(2000)
+                    print(f"    clicked enable", flush=True)
+        except Exception as e:
+            print(f"    enable failed: {e}", flush=True)
+            return False
         # Fill address
         to_box = modal.locator('input[type="text"], input[type="email"]').first
         await to_box.wait_for(timeout=8000)
