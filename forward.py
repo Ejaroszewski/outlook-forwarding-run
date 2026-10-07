@@ -611,9 +611,9 @@ async def run_one(idx, acc, proxy_cfg, sem, progress):
         if progress.get(email) == "done":
             return
         print(f"[{idx}] {email} -> {dest}", flush=True)
-        # Random delay between accounts to look more human (5-20 seconds)
-        # This helps avoid Microsoft flagging rapid automated logins
-        delay = random.uniform(5, 20)
+        # Human-like pacing: longer random delay between accounts (15-45s).
+        # Wider gap = harder for Microsoft to flag as automated logins.
+        delay = random.uniform(15, 45)
         print(f"[{idx}] waiting {delay:.1f}s before starting (safety delay)", flush=True)
         await asyncio.sleep(delay)
         try:
@@ -623,18 +623,48 @@ async def run_one(idx, acc, proxy_cfg, sem, progress):
                     proxy=proxy_cfg,
                     args=["--disable-blink-features=AutomationControlled"],
                 )
-                # Rotate user agent slightly and randomize viewport for human-like variation
-                ua_versions = ["131.0.0.0", "130.0.0.0", "129.0.0.0"]
-                ua = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{random.choice(ua_versions)} Safari/537.36"
-                vw = random.choice([{"width": 1366, "height": 768}, {"width": 1920, "height": 1080}, {"width": 1440, "height": 900}])
+                # --- Fingerprint rotation: wide variation per account ---
+                # User agents: Chrome 128-132 + Edge, Windows 10/11
+                ua_pool = [
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+                ]
+                ua = random.choice(ua_pool)
+                # Viewports: common desktop sizes
+                vw_pool = [
+                    {"width": 1366, "height": 768},
+                    {"width": 1440, "height": 900},
+                    {"width": 1536, "height": 864},
+                    {"width": 1600, "height": 900},
+                    {"width": 1920, "height": 1080},
+                    {"width": 1280, "height": 720},
+                ]
+                vw = random.choice(vw_pool)
+                # Device scale factor: 1x or 2x (retina) at random
+                dsf = random.choice([1, 1, 2])
                 ctx = await browser.new_context(
                     user_agent=ua,
                     viewport=vw,
+                    device_scale_factor=dsf,
                     locale="en-US",
                 )
                 # Explicitly clear any cached data (fresh context should be clean, but be thorough)
                 await ctx.clear_cookies()
                 page = await ctx.new_page()
+                # Behavioral: small random scroll + pause before login, like a human
+                # orienting on the page. Varies per account.
+                try:
+                    await page.evaluate(f"window.scrollBy(0, {random.randint(50, 300)})")
+                    await page.wait_for_timeout(random.randint(800, 2500))
+                    await page.evaluate("window.scrollTo(0, 0)")
+                    await page.wait_for_timeout(random.randint(500, 1500))
+                except Exception:
+                    pass
                 ok = await login(page, acc)
                 if not ok:
                     progress[email] = "login_failed"
@@ -679,7 +709,10 @@ async def main():
     progress = load_progress()
     sem = asyncio.Semaphore(2)
     async def gated(i, a):
-        await asyncio.sleep((i % 2) * 15)
+        # Stagger starts: even indices go first, odd ones wait a random 20-40s.
+        # Combined with the 15-45s per-account delay, logins stay well spread out.
+        if i % 2 == 1:
+            await asyncio.sleep(random.uniform(20, 40))
         await run_one(i, a, proxy_cfg, sem, progress)
     await asyncio.gather(*(gated(i, a) for i, a in subset))
     done = sum(1 for v in progress.values() if v == "done")
