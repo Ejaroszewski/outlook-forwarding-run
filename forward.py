@@ -147,6 +147,58 @@ async def login(page, acc):
         return False
     return True
 
+async def fill_verification_code(page, modal, code):
+    """Enter a Microsoft verification code into the modal (single or multi-box OTP)."""
+    # Multi-box OTP: one input per digit
+    try:
+        boxes = modal.locator('input[inputmode="numeric"], input[type="tel"]')
+        n = await boxes.count()
+    except Exception:
+        n = 0
+    if n >= 4:
+        try:
+            for i, ch in enumerate(code[:n]):
+                await boxes.nth(i).fill(ch)
+            await page.wait_for_timeout(1000)
+            print(f"    filled {n} code boxes", flush=True)
+            for txt in ["Verify", "Submit", "Continue", "Next"]:
+                try:
+                    btn = modal.get_by_text(txt, exact=False).first
+                    await btn.wait_for(timeout=5000)
+                    await btn.click(timeout=8000)
+                    print(f"    clicked {txt} after code", flush=True)
+                    return True
+                except Exception:
+                    continue
+            return True
+        except Exception as e:
+            print(f"    multi-box fill failed: {str(e)[:60]}", flush=True)
+            return False
+    # Single input
+    for sel in [
+        lambda: modal.locator('input[inputmode="numeric"]').first,
+        lambda: modal.locator('input[type="text"]').first,
+    ]:
+        try:
+            el = sel()
+            await el.wait_for(state="visible", timeout=8000)
+            await el.fill(code)
+            await page.wait_for_timeout(1000)
+            print(f"    filled code input", flush=True)
+            for txt in ["Verify", "Submit", "Continue", "Next"]:
+                try:
+                    btn = modal.get_by_text(txt, exact=False).first
+                    await btn.wait_for(timeout=5000)
+                    await btn.click(timeout=8000)
+                    print(f"    clicked {txt} after code", flush=True)
+                    return True
+                except Exception:
+                    continue
+            return True
+        except Exception:
+            continue
+    return False
+
 async def create_rule(page, dest, acc):
     """Click Settings gear -> use the optionsModal directly."""
     await page.goto("https://outlook.live.com/mail/0/",
@@ -166,33 +218,40 @@ async def create_rule(page, dest, acc):
         except Exception:
             print(f"    no optionsModal found", flush=True)
             return False
-        # Use search box in modal (more reliable than nav clicking)
-        # The modal has a search box at the top
-        try:
-            await page.keyboard.press("Escape")
-            await page.wait_for_timeout(2000)
-            search = None
-            for sel in [
-                lambda: modal.locator('input[type="search"]').first,
-                lambda: modal.locator('input[placeholder*="Search" i]').first,
-            ]:
+        # Use search box in modal (more reliable than nav clicking).
+        # The modal search box can render slowly or vary by UI language,
+        # so try several selectors with retries before giving up.
+        search = None
+        search_selectors = [
+            lambda: modal.locator('input[type="search"]').first,
+            lambda: modal.locator('input[placeholder*="Search" i]').first,
+            lambda: modal.locator('input[placeholder*="T\u00ecm" i]').first,
+            lambda: modal.locator('input[aria-label*="search" i]').first,
+            lambda: modal.locator('[role="searchbox"]').first,
+        ]
+        for attempt in range(3):
+            for sel in search_selectors:
                 try:
                     el = sel()
-                    await el.wait_for(state="visible", timeout=10000)
+                    await el.wait_for(state="visible", timeout=8000)
                     search = el
-                    print(f"    found search box", flush=True)
+                    print(f"    found search box (attempt {attempt + 1})", flush=True)
                     break
                 except Exception:
                     continue
-            if not search:
-                print(f"    no search box found", flush=True)
-                return False
+            if search:
+                break
+            await page.wait_for_timeout(3000)
+        if not search:
+            print(f"    no search box found", flush=True)
+            return False
+        try:
             await search.fill("forwarding")
             await page.wait_for_timeout(3000)
             print(f"    searched forwarding", flush=True)
             # Click the Forwarding result
             result = None
-            for txt in ["Forwarding and IMAP", "Forwarding"]:
+            for txt in ["Forwarding and IMAP", "Forwarding", "Chuy\u1ec3n ti\u1ebfp và IMAP", "Chuy\u1ec3n ti\u1ebfp"]:
                 try:
                     el = modal.get_by_text(txt, exact=False).first
                     await el.wait_for(state="visible", timeout=8000)
@@ -213,20 +272,23 @@ async def create_rule(page, dest, acc):
         except Exception as e:
             print(f"    search nav failed: {str(e)[:80]}", flush=True)
             return False
-        # Check for verification - handle both flows Joseph described:
+        # Check for verification - check FULL PAGE, not just modal (message may be in overlay)
+        # Handle both flows Joseph described:
         # 1. Sometimes just asks for recovery email ID (no code)
         # 2. Sometimes sends a code to recovery email
         try:
-            modal_text = await modal.inner_text(timeout=5000)
-            lower_text = modal_text.lower()
-            if "verify your account" in lower_text or "sign in and verify" in lower_text:
-                print(f"    verification required", flush=True)
+            # Check page text (broader than modal)
+            page_text = await page.locator("body").inner_text(timeout=8000)
+            lower_text = page_text.lower()
+            print(f"    page check for verification...", flush=True)
+            if "verify your account" in lower_text or "verify to forward" in lower_text:
+                print(f"    verification required (found in page)", flush=True)
                 recovery_email = acc.get('recovery_email', '')
-                # Flow 1: Check if it's asking for email address
+                # Flow 1: Check if it's asking for email address - search whole page
                 email_input = None
                 for sel in [
-                    lambda: modal.locator('input[type="email"]').first,
-                    lambda: modal.get_by_placeholder("Email", exact=False).first,
+                    lambda: page.locator('input[type="email"]').first,
+                    lambda: page.locator('input[placeholder*="mail" i]').first,
                 ]:
                     try:
                         el = sel()
@@ -238,59 +300,32 @@ async def create_rule(page, dest, acc):
                         continue
                 if email_input and recovery_email:
                     await email_input.fill(recovery_email)
-                    await page.wait_for_timeout(1000)
+                    await page.wait_for_timeout(1500)
                     print(f"    provided recovery email", flush=True)
-                    # Click continue/verify
                     for txt in ["Continue", "Verify", "Next", "Submit"]:
                         try:
-                            btn = modal.get_by_text(txt, exact=False).first
+                            btn = page.get_by_role("button", name=txt).first
                             await btn.wait_for(timeout=5000)
                             try:
                                 await btn.click(timeout=8000)
                             except Exception:
                                 await btn.evaluate("el => el.click()")
                             await page.wait_for_timeout(5000)
-                            print(f"    clicked {txt}", flush=True)
+                            print(f"    clicked {txt} after email", flush=True)
                             break
                         except Exception:
                             continue
-                    # Check if now asking for code (flow 2) or if verified
                     await page.wait_for_timeout(3000)
-                    try:
-                        new_text = await modal.inner_text(timeout=5000)
-                        if "code" in new_text.lower() and ("enter" in new_text.lower() or "verification" in new_text.lower()):
-                            print(f"    flow 2: code requested, needs inbox access", flush=True)
-                            # TODO: Implement custom domain inbox access for s2proxy/supemail
-                            # For now, mark as needs_code
-                            return False
-                        else:
-                            print(f"    email verification submitted, continuing", flush=True)
-                            # Continue to forwarding setup
-                    except Exception:
-                        pass
                 else:
-                    # Flow 2 directly: code input visible
-                    print(f"    no email input, checking for code input", flush=True)
-                    code_input = None
-                    for sel in [
-                        lambda: modal.locator('input[inputmode="numeric"]').first,
-                        lambda: modal.locator('input[type="text"]').first,
-                    ]:
-                        try:
-                            el = sel()
-                            await el.wait_for(state="visible", timeout=5000)
-                            # Check if it's a code field (short, numeric)
-                            code_input = el
-                            break
-                        except Exception:
-                            continue
-                    if code_input:
-                        print(f"    code input found but no inbox access for custom domain yet", flush=True)
-                        return False
-                    print(f"    BLOCKED: verification needs inbox access", flush=True)
+                    print(f"    no email input found, checking for code flow", flush=True)
+                    # Flow 2: code input - needs custom inbox access (s2proxy/supemail)
+                    # Log clearly for now
+                    print(f"    BLOCKED: code verification needs inbox access", flush=True)
                     return False
+            else:
+                print(f"    no verification prompt detected", flush=True)
         except Exception as e:
-            print(f"    verification handling: {str(e)[:60]}", flush=True)
+            print(f"    verification check: {str(e)[:60]}", flush=True)
             pass
         # Now should be on Forwarding page - find enable toggle (could be switch, not checkbox)
         # Dismiss any overlay first
