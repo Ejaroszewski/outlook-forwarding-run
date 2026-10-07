@@ -213,76 +213,84 @@ async def create_rule(page, dest, acc):
         except Exception as e:
             print(f"    search nav failed: {str(e)[:80]}", flush=True)
             return False
-        # Check for verification blocker - attempt to verify via recovery email
+        # Check for verification - handle both flows Joseph described:
+        # 1. Sometimes just asks for recovery email ID (no code)
+        # 2. Sometimes sends a code to recovery email
         try:
             modal_text = await modal.inner_text(timeout=5000)
-            if "verify your account" in modal_text.lower() or "sign in and verify" in modal_text.lower():
-                print(f"    verification required, attempting via recovery email", flush=True)
-                # Look for "send code" or similar button
-                send_btn = None
-                for txt in ["Send code", "Send verification", "Verify", "Continue"]:
+            lower_text = modal_text.lower()
+            if "verify your account" in lower_text or "sign in and verify" in lower_text:
+                print(f"    verification required", flush=True)
+                recovery_email = acc.get('recovery_email', '')
+                # Flow 1: Check if it's asking for email address
+                email_input = None
+                for sel in [
+                    lambda: modal.locator('input[type="email"]').first,
+                    lambda: modal.get_by_placeholder("Email", exact=False).first,
+                ]:
                     try:
-                        el = modal.get_by_text(txt, exact=False).first
+                        el = sel()
                         await el.wait_for(state="visible", timeout=5000)
-                        send_btn = el
-                        print(f"    found: {txt}", flush=True)
+                        email_input = el
+                        print(f"    found email input (flow: provide email ID)", flush=True)
                         break
                     except Exception:
                         continue
-                if send_btn:
-                    try:
-                        await send_btn.click(timeout=8000)
-                    except Exception:
-                        await send_btn.evaluate("el => el.click()")
+                if email_input and recovery_email:
+                    await email_input.fill(recovery_email)
+                    await page.wait_for_timeout(1000)
+                    print(f"    provided recovery email", flush=True)
+                    # Click continue/verify
+                    for txt in ["Continue", "Verify", "Next", "Submit"]:
+                        try:
+                            btn = modal.get_by_text(txt, exact=False).first
+                            await btn.wait_for(timeout=5000)
+                            try:
+                                await btn.click(timeout=8000)
+                            except Exception:
+                                await btn.evaluate("el => el.click()")
+                            await page.wait_for_timeout(5000)
+                            print(f"    clicked {txt}", flush=True)
+                            break
+                        except Exception:
+                            continue
+                    # Check if now asking for code (flow 2) or if verified
                     await page.wait_for_timeout(3000)
-                    print(f"    code send requested", flush=True)
-                    # Poll Gmail for the verification code
-                    refresh_token = acc.get('refresh_token', '')
-                    client_id = acc.get('client_id', '')
-                    if refresh_token and client_id:
-                        code = get_verification_code_from_gmail(refresh_token, client_id)
-                        if code:
-                            # Find code input and enter it
-                            code_input = None
-                            for sel in [
-                                lambda: modal.locator('input[type="text"]').first,
-                                lambda: modal.locator('input[inputmode="numeric"]').first,
-                            ]:
-                                try:
-                                    el = sel()
-                                    await el.wait_for(state="visible", timeout=8000)
-                                    code_input = el
-                                    break
-                                except Exception:
-                                    continue
-                            if code_input:
-                                await code_input.fill(code)
-                                await page.wait_for_timeout(1000)
-                                # Click verify/submit
-                                for txt in ["Verify", "Submit", "Confirm"]:
-                                    try:
-                                        btn = modal.get_by_text(txt, exact=False).first
-                                        await btn.wait_for(timeout=5000)
-                                        await btn.click(timeout=8000)
-                                        await page.wait_for_timeout(5000)
-                                        print(f"    verification code submitted", flush=True)
-                                        break
-                                    except Exception:
-                                        continue
-                            else:
-                                print(f"    no code input found", flush=True)
-                                return False
-                        else:
-                            print(f"    could not retrieve verification code", flush=True)
+                    try:
+                        new_text = await modal.inner_text(timeout=5000)
+                        if "code" in new_text.lower() and ("enter" in new_text.lower() or "verification" in new_text.lower()):
+                            print(f"    flow 2: code requested, needs inbox access", flush=True)
+                            # TODO: Implement custom domain inbox access for s2proxy/supemail
+                            # For now, mark as needs_code
                             return False
-                    else:
-                        print(f"    no refresh_token/client_id for Gmail", flush=True)
-                        return False
+                        else:
+                            print(f"    email verification submitted, continuing", flush=True)
+                            # Continue to forwarding setup
+                    except Exception:
+                        pass
                 else:
-                    print(f"    BLOCKED: no send-code button found", flush=True)
+                    # Flow 2 directly: code input visible
+                    print(f"    no email input, checking for code input", flush=True)
+                    code_input = None
+                    for sel in [
+                        lambda: modal.locator('input[inputmode="numeric"]').first,
+                        lambda: modal.locator('input[type="text"]').first,
+                    ]:
+                        try:
+                            el = sel()
+                            await el.wait_for(state="visible", timeout=5000)
+                            # Check if it's a code field (short, numeric)
+                            code_input = el
+                            break
+                        except Exception:
+                            continue
+                    if code_input:
+                        print(f"    code input found but no inbox access for custom domain yet", flush=True)
+                        return False
+                    print(f"    BLOCKED: verification needs inbox access", flush=True)
                     return False
         except Exception as e:
-            print(f"    verification handling failed: {str(e)[:60]}", flush=True)
+            print(f"    verification handling: {str(e)[:60]}", flush=True)
             pass
         # Now should be on Forwarding page - find enable toggle (could be switch, not checkbox)
         # Dismiss any overlay first
