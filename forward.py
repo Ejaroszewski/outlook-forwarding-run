@@ -159,13 +159,22 @@ async def create_rule_via_settings(page, dest):
         settings_btn = None
         for selector in [
             lambda: page.get_by_role("button", name="Settings").first,
+            lambda: page.get_by_role("button", name="Cài đặt").first,
             lambda: page.locator('button[aria-label*="Settings" i]').first,
+            lambda: page.locator('button[aria-label*="Cài đặt" i]').first,
             lambda: page.locator('header button').last,
         ]:
             try:
                 el = selector()
                 await el.wait_for(timeout=8000)
+                # Skip profile/avatar button
+                try:
+                    if await el.locator('img').count() > 0:
+                        continue
+                except Exception:
+                    pass
                 settings_btn = el
+                print(f"    found Settings button", flush=True)
                 break
             except Exception:
                 continue
@@ -180,17 +189,20 @@ async def create_rule_via_settings(page, dest):
             print(f"    settings panel text: {panel_text[:300]}", flush=True)
         except Exception:
             pass
-        # Try View all Outlook settings
+        # Try View all Outlook settings (English + Vietnamese)
+        for txt in ["View all Outlook settings", "Xem tất cả", "Cài đặt Outlook"]:
+            try:
+                view_all = page.get_by_text(txt, exact=False).first
+                await view_all.wait_for(timeout=3000)
+                await view_all.click(timeout=8000)
+                await page.wait_for_timeout(4000)
+                print(f"    clicked: {txt}", flush=True)
+                break
+            except Exception:
+                continue
+        # Try search (English + Vietnamese)
         try:
-            view_all = page.get_by_text("View all Outlook settings", exact=False).first
-            await view_all.wait_for(timeout=5000)
-            await view_all.click(timeout=8000)
-            await page.wait_for_timeout(4000)
-        except Exception:
-            print(f"    no View all Outlook settings", flush=True)
-        # Try search
-        try:
-            for placeholder in ["Search Outlook settings", "Search settings", "Search"]:
+            for placeholder in ["Search Outlook settings", "Search settings", "Search", "Tìm kiếm", "Tìm"]:
                 try:
                     search_box = page.get_by_placeholder(placeholder).first
                     await search_box.wait_for(timeout=3000)
@@ -199,9 +211,21 @@ async def create_rule_via_settings(page, dest):
                     break
                 except Exception:
                     continue
-            fwd_result = page.get_by_text("Forwarding", exact=False).first
-            await fwd_result.click(timeout=8000)
-            await page.wait_for_timeout(4000)
+            # Click Forwarding result (English + Vietnamese)
+            fwd_clicked = False
+            for txt in ["Forwarding", "Chuyển tiếp"]:
+                try:
+                    fwd_result = page.get_by_text(txt, exact=False).first
+                    await fwd_result.click(timeout=5000)
+                    await page.wait_for_timeout(4000)
+                    print(f"    clicked: {txt}", flush=True)
+                    fwd_clicked = True
+                    break
+                except Exception:
+                    continue
+            if not fwd_clicked:
+                print(f"    settings search failed", flush=True)
+                return False
         except Exception as e:
             print(f"    settings search failed", flush=True)
             return False
@@ -215,9 +239,21 @@ async def create_rule_via_settings(page, dest):
         await to_box.wait_for(timeout=8000)
         await to_box.fill(dest)
         await page.wait_for_timeout(1500)
-        save_btn = page.get_by_role("button", name="Save").first
+        save_btn = None
+        for name in ["Save", "Lưu"]:
+            try:
+                btn = page.get_by_role("button", name=name).first
+                await btn.wait_for(timeout=5000)
+                save_btn = btn
+                break
+            except Exception:
+                continue
+        if not save_btn:
+            print(f"    no Save button found", flush=True)
+            return False
         await save_btn.click(timeout=10000)
         await page.wait_for_timeout(5000)
+        print(f"    forwarding saved", flush=True)
         return True
     except Exception as e:
         print(f"    settings UI failed: {str(e)[:80]}", flush=True)
