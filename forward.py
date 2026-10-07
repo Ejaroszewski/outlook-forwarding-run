@@ -6,7 +6,7 @@ GitHub Actions runner: Outlook forwarding via local Playwright + proxy.
 - Env: PROXY_USER, PROXY_PASS
 - Args: --start N --limit N
 """
-import asyncio, csv, json, os, sys, re, time
+import asyncio, csv, json, os, sys, re, time, random
 import urllib.request, urllib.parse
 
 DESTS = [f"ranksoldier{i}@gmail.com" for i in range(2, 12)]
@@ -611,6 +611,11 @@ async def run_one(idx, acc, proxy_cfg, sem, progress):
         if progress.get(email) == "done":
             return
         print(f"[{idx}] {email} -> {dest}", flush=True)
+        # Random delay between accounts to look more human (5-20 seconds)
+        # This helps avoid Microsoft flagging rapid automated logins
+        delay = random.uniform(5, 20)
+        print(f"[{idx}] waiting {delay:.1f}s before starting (safety delay)", flush=True)
+        await asyncio.sleep(delay)
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
@@ -618,11 +623,17 @@ async def run_one(idx, acc, proxy_cfg, sem, progress):
                     proxy=proxy_cfg,
                     args=["--disable-blink-features=AutomationControlled"],
                 )
+                # Rotate user agent slightly and randomize viewport for human-like variation
+                ua_versions = ["131.0.0.0", "130.0.0.0", "129.0.0.0"]
+                ua = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{random.choice(ua_versions)} Safari/537.36"
+                vw = random.choice([{"width": 1366, "height": 768}, {"width": 1920, "height": 1080}, {"width": 1440, "height": 900}])
                 ctx = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                    viewport={"width": 1366, "height": 768},
+                    user_agent=ua,
+                    viewport=vw,
                     locale="en-US",
                 )
+                # Explicitly clear any cached data (fresh context should be clean, but be thorough)
+                await ctx.clear_cookies()
                 page = await ctx.new_page()
                 ok = await login(page, acc)
                 if not ok:
@@ -632,6 +643,11 @@ async def run_one(idx, acc, proxy_cfg, sem, progress):
                     rok = await create_rule(page, dest, acc)
                     progress[email] = "done" if rok else "rule_failed"
                     print(f"[{idx}] rule {'CREATED' if rok else 'FAILED'}", flush=True)
+                # Clear cookies before closing for thorough cleanup
+                try:
+                    await ctx.clear_cookies()
+                except Exception:
+                    pass
                 await browser.close()
         except Exception as e:
             progress[email] = f"error: {str(e)[:80]}"
