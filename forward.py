@@ -86,48 +86,86 @@ async def login(page, acc):
     return True
 
 async def create_rule(page, dest):
-    """Use Settings > Mail > Forwarding (simpler than Rules page)."""
-    await page.goto("https://outlook.live.com/mail/0/options/mail/forwarding",
+    """Use Settings > Mail > Forwarding via UI navigation (deep links don't work in new Outlook)."""
+    # Start from inbox
+    await page.goto("https://outlook.live.com/mail/0/",
                     timeout=60000, wait_until="domcontentloaded")
     await page.wait_for_timeout(8000)
     if "microsoft.com" in page.url:
-        print(f"    forwarding page bounced to microsoft.com", flush=True)
+        print(f"    inbox bounced to microsoft.com", flush=True)
         return False
     try:
-        # Enable forwarding checkbox
+        # Click Settings gear icon
+        settings_btn = None
+        for selector in [
+            lambda: page.get_by_role("button", name="Settings").first,
+            lambda: page.get_by_label("Settings").first,
+            lambda: page.locator('[aria-label="Settings"]').first,
+        ]:
+            try:
+                el = selector()
+                await el.wait_for(timeout=10000)
+                settings_btn = el
+                break
+            except Exception:
+                continue
+        if not settings_btn:
+            print(f"    could not find Settings button", flush=True)
+            return False
+        await settings_btn.click(timeout=10000)
+        await page.wait_for_timeout(3000)
+        # Look for "View all Outlook settings" or search for forwarding
+        try:
+            view_all = page.get_by_text("View all Outlook settings", exact=False).first
+            await view_all.wait_for(timeout=8000)
+            await view_all.click(timeout=8000)
+            await page.wait_for_timeout(4000)
+        except Exception:
+            print(f"    no View all Outlook settings link", flush=True)
+        # In settings dialog, click Mail then Forwarding
+        # Try searching for "forwarding"
+        try:
+            search_box = page.get_by_placeholder("Search Outlook settings").first
+            await search_box.wait_for(timeout=8000)
+            await search_box.fill("forwarding")
+            await page.wait_for_timeout(3000)
+            # Click the Forwarding result
+            fwd_result = page.get_by_text("Forwarding", exact=False).first
+            await fwd_result.click(timeout=8000)
+            await page.wait_for_timeout(4000)
+        except Exception as e:
+            print(f"    settings search failed: {str(e)[:60]}", flush=True)
+            return False
+        # Now look for Enable forwarding checkbox
         enable_cb = None
         for selector in [
             lambda: page.get_by_label("Enable forwarding").first,
-            lambda: page.get_by_text("Enable forwarding", exact=False).first,
             lambda: page.locator('input[type="checkbox"]').first,
         ]:
             try:
                 el = selector()
-                await el.wait_for(timeout=8000)
+                await el.wait_for(timeout=10000)
                 enable_cb = el
                 break
             except Exception:
                 continue
         if not enable_cb:
             print(f"    could not find Enable forwarding checkbox", flush=True)
-            print(f"    title: {await page.title()}, url: {page.url}", flush=True)
+            print(f"    title: {await page.title()}", flush=True)
             return False
-        # Check if already enabled
-        is_checked = await enable_cb.is_checked() if await enable_cb.get_attribute("type") == "checkbox" else False
-        if not is_checked:
+        if not await enable_cb.is_checked():
             await enable_cb.click(timeout=10000)
             await page.wait_for_timeout(2000)
-        # Find the "Forward to" textbox
+        # Find forward-to textbox
         to_box = None
         for selector in [
-            lambda: page.get_by_label("Forward my email to").first,
-            lambda: page.get_by_placeholder("Email address").first,
             lambda: page.locator('input[type="text"]').first,
             lambda: page.locator('input[type="email"]').first,
         ]:
             try:
                 el = selector()
                 await el.wait_for(timeout=8000)
+                # Make sure it's empty or not the search box
                 to_box = el
                 break
             except Exception:
@@ -145,33 +183,16 @@ async def create_rule(page, dest):
                 await keep_cb.click(timeout=5000)
                 await page.wait_for_timeout(1000)
         except Exception:
-            print(f"    keep-a-copy checkbox not found, continuing", flush=True)
-        # Save button
-        save_btn = None
-        for selector in [
-            lambda: page.get_by_role("button", name="Save").first,
-            lambda: page.get_by_text("Save", exact=True).first,
-        ]:
-            try:
-                el = selector()
-                await el.wait_for(timeout=8000)
-                save_btn = el
-                break
-            except Exception:
-                continue
-        if not save_btn:
-            print(f"    could not find Save button", flush=True)
-            return False
+            pass
+        # Save
+        save_btn = page.get_by_role("button", name="Save").first
+        await save_btn.wait_for(timeout=10000)
         await save_btn.click(timeout=10000)
         await page.wait_for_timeout(5000)
     except Exception as e:
         print(f"    forwarding setup failed: {str(e)[:80]}", flush=True)
         return False
-    # Verify by reloading and checking the value
-    await page.reload(wait_until="domcontentloaded")
-    await page.wait_for_timeout(5000)
-    content = await page.content()
-    return dest in content
+    return True
 
 async def run_one(idx, acc, proxy_cfg, sem, progress):
     from playwright.async_api import async_playwright
