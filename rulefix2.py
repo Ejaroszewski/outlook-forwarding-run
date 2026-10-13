@@ -345,7 +345,7 @@ async def fresh_verify(idx, acc, dest):
             await browser.close()
 
 async def do_one(p, idx, acc):
-    dest = dest_for(idx)
+    dest = dest_for(idx, acc["email"])
     res = {"idx": idx, "email": acc["email"], "dest": dest}
     RESULTS[acc["email"]] = res
     save()
