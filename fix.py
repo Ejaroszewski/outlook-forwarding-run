@@ -18,6 +18,7 @@ from verify import read_settings, interpret, UAS, VWS, TZS
 
 RESULTS = {}
 SHOT_BUDGET = [16]
+RECOVERY_MODE = ["code"]
 
 def save():
     with open("fix.json", "w") as f:
@@ -167,6 +168,35 @@ async def dismiss_dialog(page):
             return True
     return False
 
+async def explore_no_code(work, idx, steps):
+    """Click 'I don't have a code' and observe. NEVER confirms a
+    security-info replacement; stops after recording the options."""
+    try:
+        el = work.get_by_text("I don't have a code", exact=False).first
+        await el.wait_for(state="visible", timeout=6000)
+        await el.click(timeout=6000)
+        steps["nocode_clicked"] = True
+    except Exception as e:
+        steps["nocode_click_error"] = str(e)[:80]
+        return "nocode_unavailable"
+    await work.wait_for_timeout(5000)
+    await shot(work, idx, "nocode1")
+    t = (await body_text(work)).lower()
+    steps["nocode_page_text"] = t[:500]
+    # A password-verification alternative is safe to complete
+    try:
+        pw = work.locator('input[type="password"]').first
+        if await pw.count() > 0 and await pw.is_visible():
+            steps["nocode_offers_password"] = True
+            return "nocode_password_path"
+    except Exception:
+        pass
+    if "30 day" in t or "30-day" in t or "can't access" in t or "cannot access" in t:
+        return "nocode_30day_wait"
+    if "replace" in t or "update your security info" in t:
+        return "nocode_replace_offer"
+    return "nocode_explored"
+
 async def handle_recovery(page, dest, acc, idx, steps):
     """Joseph's method: Review recovery method -> add dest as recovery email.
     Returns added | code_required | failed."""
@@ -227,6 +257,8 @@ async def handle_recovery(page, dest, acc, idx, steps):
         if code_box is not None or "enter the code" in text or "we sent a code" in text:
             steps["rec_code_step"] = True
             await shot(work, idx, "rec-code")
+            if RECOVERY_MODE[0] == "nocode":
+                return await explore_no_code(work, idx, steps)
             code = None
             rt, cid = acc.get("refresh_token", ""), acc.get("client_id", "")
             if rt and cid:
@@ -310,6 +342,30 @@ async def quick_state(page):
     dump = await page.evaluate(_v.DUMP_JS)
     return interpret(dump)
 
+async def verify_fresh_session(idx, acc, dest):
+    """Triple check: brand-new browser + fresh login, read the settings.
+    Returns the interpreted settings dict from the independent session."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True, args=["--disable-blink-features=AutomationControlled"])
+        try:
+            ctx = await browser.new_context(
+                user_agent=random.choice(UAS), viewport=random.choice(VWS),
+                locale="en-US", timezone_id=random.choice(TZS),
+                color_scheme="light", device_scale_factor=1)
+            page = await ctx.new_page()
+            ok = await login(page, acc)
+            if not ok:
+                return {"enabled": None, "address": None, "wall": False, "login": False}
+            s = await read_settings(page, idx)
+            s["login"] = True
+            return s
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
 async def fix_one(idx, acc):
     dest = dest_for(idx)
     res = {"idx": idx, "email": acc["email"], "dest": dest, "recovery": "none_needed"}
@@ -380,6 +436,18 @@ async def fix_one(idx, acc):
                 await browser.close()
             except Exception:
                 pass
+    # Triple check: independent fresh-session verification for positives
+    if res.get("status") in ("confirmed", "fixed_confirmed"):
+        try:
+            tv = await verify_fresh_session(idx, acc, dest)
+            res["triple"] = {"enabled": tv.get("enabled"), "address": tv.get("address"), "login": tv.get("login")}
+            res["triple_checked"] = bool(is_correct(tv, dest))
+        except Exception as e:
+            res["triple_checked"] = False
+            res["triple_error"] = str(e)[:120]
+        if not res.get("triple_checked"):
+            res["status"] = "triple_check_failed"
+        print(f"[{idx}] TRIPLE {'PASS' if res.get('triple_checked') else 'FAIL'}", flush=True)
     res["steps"] = steps
     RESULTS[acc["email"]] = res
     save()
@@ -389,7 +457,9 @@ async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--indices", required=True)
     ap.add_argument("--concurrency", type=int, default=1)
+    ap.add_argument("--recovery-mode", default="code")
     args = ap.parse_args()
+    RECOVERY_MODE[0] = args.recovery_mode
     accounts = load_accounts()
     idxs = [int(x) for x in args.indices.split(",") if x.strip()]
     sem = asyncio.Semaphore(max(1, args.concurrency))
