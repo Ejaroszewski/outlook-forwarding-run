@@ -109,11 +109,33 @@ async def pick_combo(page, combo_aria, option_part, steps, tag):
         steps[f"{tag}_pick_error"] = str(e)[:100]
         return False
 
+
+async def dismiss_dialog(page):
+    """If the recovery-method dialog overlays the page, dismiss with Not now."""
+    try:
+        t = (await body_text(page)).lower()
+        if "recovery method" not in t:
+            return False
+        for fn in (
+            lambda: page.get_by_role("button", name="Not now").first.click(timeout=5000),
+            lambda: page.get_by_text("Not now").first.click(timeout=5000),
+        ):
+            try:
+                await fn()
+                await page.wait_for_timeout(1800)
+                return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
 async def create_rule(page, dest, idx, steps):
     if not await open_editor(page):
         steps["editor_opened"] = False
         return False
     steps["editor_opened"] = True
+    steps["dialog_at_editor"] = await dismiss_dialog(page)
     await shot(page, idx, "editor")
     # Name
     try:
@@ -127,9 +149,11 @@ async def create_rule(page, dest, idx, steps):
     # Condition
     steps["condition_set"] = await pick_combo(page, "conditional", "Apply to all messages", steps, "cond")
     await page.wait_for_timeout(2000)
+    steps["dialog_after_cond"] = await dismiss_dialog(page)
     # Action
     steps["action_set"] = await pick_combo(page, "action", "Forward to", steps, "act")
     await page.wait_for_timeout(2500)
+    steps["dialog_after_action"] = await dismiss_dialog(page)
     await shot(page, idx, "action")
     # Address people-picker
     addr = False
@@ -164,6 +188,7 @@ async def create_rule(page, dest, idx, steps):
     except Exception as e:
         steps["address_error"] = str(e)[:100]
     steps["address_set"] = addr
+    steps["dialog_after_address"] = await dismiss_dialog(page)
     t = await body_text(page)
     steps["dest_visible_before_save"] = dest.lower() in t.lower()
     await shot(page, idx, "filled")
@@ -180,7 +205,21 @@ async def create_rule(page, dest, idx, steps):
     except Exception as e:
         steps["save_error"] = str(e)[:100]
     steps["save_clicked"] = saved
-    await page.wait_for_timeout(5000)
+    await page.wait_for_timeout(3000)
+    if await dismiss_dialog(page):
+        steps["dialog_after_save_dismissed"] = True
+        # The save click may have been swallowed by the dialog; retry once
+        # if the editor is still open with an enabled Save.
+        try:
+            btn = page.get_by_role("button", name="Save").first
+            if await btn.is_enabled():
+                await btn.click(timeout=6000)
+                steps["save_clicked_retry"] = True
+                await page.wait_for_timeout(3000)
+                await dismiss_dialog(page)
+        except Exception:
+            pass
+    await page.wait_for_timeout(2000)
     t = await body_text(page)
     steps["dialog_after_save"] = "recovery method" in t.lower()
     steps["after_save_text_tail"] = t[-400:]
