@@ -68,66 +68,61 @@ async def open_editor(page):
     return False
 
 async def pick_combo(page, combo_aria, option_part, steps, tag):
-    """Open a Fluent combobox by aria-label, dump options, click the match."""
-    try:
-        combo = page.locator(f'[role="combobox"][aria-label*="{combo_aria}" i]').first
-        await combo.wait_for(state="visible", timeout=8000)
-        await combo.click(timeout=6000)
-    except Exception as e:
-        steps[f"{tag}_combo_error"] = str(e)[:100]
-        return False
-    await page.wait_for_timeout(1800)
-    try:
-        opts = await page.evaluate("""() => {
-          const sels = '[role="option"], [role="menuitem"], [role="listbox"] *, .ms-ComboBox-options *';
-          const seen = [];
-          document.querySelectorAll('[role="option"], [role="menuitem"]').forEach(o => {
-            const s = (o.innerText || '').trim();
-            if (s) seen.push(s.slice(0, 60));
-          });
-          return seen;
-        }""")
-        steps[f"{tag}_options"] = opts[:30]
-    except Exception:
-        pass
-    for exact in (True, False):
+    """Open a Fluent combobox, click the option, and VERIFY the combo now
+    shows the option. The recovery dialog can appear at any moment and
+    swallow the interaction, so: dismiss before, retry the whole pick,
+    verify after."""
+    for attempt in range(3):
+        await dismiss_dialog(page)
         try:
-            opt = page.get_by_role("option", name=re.compile(re.escape(option_part), re.I)).first
-            await opt.wait_for(state="visible", timeout=5000)
-            await opt.click(timeout=5000)
-            steps[f"{tag}_picked"] = option_part
-            return True
-        except Exception:
+            combo = page.locator(f'[role="combobox"][aria-label*="{combo_aria}" i]').first
+            await combo.wait_for(state="visible", timeout=8000)
+            await combo.click(timeout=6000)
+        except Exception as e:
+            steps[f"{tag}_combo_error_{attempt}"] = str(e)[:80]
+            await page.wait_for_timeout(1500)
             continue
-    try:
-        el = page.get_by_text(option_part, exact=False).first
-        await el.wait_for(state="visible", timeout=4000)
-        await el.click(timeout=4000)
-        steps[f"{tag}_picked"] = option_part + " (text)"
-        return True
-    except Exception as e:
-        steps[f"{tag}_pick_error"] = str(e)[:100]
-        return False
-
-
-async def dismiss_dialog(page):
-    """If the recovery-method dialog overlays the page, dismiss with Not now."""
-    try:
-        t = (await body_text(page)).lower()
-        if "recovery method" not in t:
-            return False
+        await page.wait_for_timeout(1800)
+        try:
+            opts = await page.evaluate("""() => {
+              const seen = [];
+              document.querySelectorAll('[role="option"], [role="menuitem"]').forEach(o => {
+                const s = (o.innerText || '').trim();
+                if (s) seen.push(s.slice(0, 60));
+              });
+              return seen;
+            }""")
+            steps[f"{tag}_options"] = opts[:30]
+        except Exception:
+            pass
+        picked = False
         for fn in (
-            lambda: page.get_by_role("button", name="Not now").first.click(timeout=5000),
-            lambda: page.get_by_text("Not now").first.click(timeout=5000),
+            lambda: page.get_by_role("option", name=re.compile(re.escape(option_part), re.I)).first.click(timeout=5000),
+            lambda: page.get_by_text(option_part, exact=False).first.click(timeout=4000),
         ):
             try:
                 await fn()
-                await page.wait_for_timeout(1800)
-                return True
+                picked = True
+                break
             except Exception:
                 continue
-    except Exception:
-        pass
+        if not picked:
+            steps[f"{tag}_pick_failed_{attempt}"] = True
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(1200)
+            continue
+        await page.wait_for_timeout(1200)
+        # verify the combo now displays the chosen option
+        try:
+            shown = await combo.inner_text()
+        except Exception:
+            shown = ""
+        steps[f"{tag}_shown_{attempt}"] = shown[:60]
+        if option_part.lower() in shown.lower():
+            steps[f"{tag}_picked"] = option_part
+            await dismiss_dialog(page)
+            return True
+        await page.wait_for_timeout(1000)
     return False
 
 async def create_rule(page, dest, idx, steps):
@@ -155,6 +150,9 @@ async def create_rule(page, dest, idx, steps):
     await page.wait_for_timeout(2500)
     steps["dialog_after_action"] = await dismiss_dialog(page)
     await shot(page, idx, "action")
+    if not steps.get("condition_set") or not steps.get("action_set"):
+        steps["abort"] = "condition or action not set after retries"
+        return False
     # Address: the recipient box sits in the same row as the action
     # combobox, immediately to its right. Find it by geometry.
     addr = False
