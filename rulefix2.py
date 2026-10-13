@@ -199,15 +199,25 @@ async def create_rule(page, dest, idx, steps):
         await page.keyboard.type(dest, delay=40)
         await page.wait_for_timeout(1800)
         steps["address_typed"] = True
-        try:
-            sug = page.get_by_text(dest, exact=False).first
-            await sug.wait_for(state="visible", timeout=3000)
-            await sug.click(timeout=3000)
-            steps["address_suggestion_clicked"] = True
-        except Exception:
+        # The picker shows a "Use this address: <addr>" button; clicking it
+        # is what actually commits the recipient.
+        committed = False
+        for fn in (
+            lambda: page.get_by_role("button", name=re.compile(r"Use this address", re.I)).first.click(timeout=5000),
+            lambda: page.get_by_text("Use this address", exact=False).first.click(timeout=5000),
+        ):
+            try:
+                await fn()
+                committed = True
+                steps["address_use_this_clicked"] = True
+                break
+            except Exception:
+                continue
+        if not committed:
             await page.keyboard.press("Enter")
-        await page.wait_for_timeout(1200)
+        await page.wait_for_timeout(1500)
         tnow = await body_text(page)
+        steps["use_this_still_showing"] = "use this address" in tnow.lower()
         if dest.lower() not in tnow.lower():
             await page.keyboard.press("Tab")
             await page.wait_for_timeout(1000)
