@@ -57,15 +57,17 @@ def interpret(dump):
         return out
     text = (dump.get("text") or "").lower()
     out["wall"] = "verify your account to forward" in text
-    sw = [s for s in dump.get("switches", []) if s.get("visible")]
-    if sw:
-        out["enabled"] = sw[0].get("aria_checked")
-    else:
-        for cb in dump.get("checkboxes", []):
-            lab = (cb.get("label") or "") + " " + (cb.get("aria_label") or "")
-            if "enable forwarding" in lab.lower():
-                out["enabled"] = "true" if cb.get("checked") else "false"
-                break
+    # The forwarding enable control is the checkbox labelled "Enable forwarding"
+    # (checked first — page-level [role=switch] elements are other settings).
+    for cb in dump.get("checkboxes", []):
+        lab = ((cb.get("label") or "") + " " + (cb.get("aria_label") or "")).lower()
+        if "nable forwarding" in lab:
+            out["enabled"] = "true" if cb.get("checked") else "false"
+            break
+    if out["enabled"] is None:
+        sw = [s for s in dump.get("switches", []) if s.get("visible") and s.get("aria_checked") is not None]
+        if sw:
+            out["enabled"] = sw[0].get("aria_checked")
     for inp in dump.get("inputs", []):
         v = (inp.get("value") or "").strip()
         if "@" in v:
