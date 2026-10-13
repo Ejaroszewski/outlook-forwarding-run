@@ -282,6 +282,43 @@ async def create_rule(page, dest, idx, steps):
     await shot(page, idx, "saved")
     return saved
 
+async def deep_state(page, dest):
+    """List check + open the rule to read the recipient inside it.
+    The collapsed list does not render the address, so has_dest from the
+    list alone is not enough."""
+    t = await body_text(page)
+    st = {
+        "has_rule_name": RULE_NAME in t,
+        "has_dest": dest.lower() in t.lower(),
+        "dialog": "recovery method" in t.lower(),
+    }
+    if st["has_rule_name"] and not st["has_dest"]:
+        opened = False
+        for fn in (
+            lambda: page.get_by_text(RULE_NAME).first.click(timeout=6000),
+            lambda: page.get_by_role("button", name=RULE_NAME).first.click(timeout=6000),
+        ):
+            try:
+                await fn()
+                opened = True
+                break
+            except Exception:
+                continue
+        if opened:
+            await page.wait_for_timeout(3500)
+            t2 = await body_text(page)
+            st["has_dest"] = dest.lower() in t2.lower()
+            st["opened_rule"] = True
+            try:
+                await page.get_by_role("button", name="Discard").first.click(timeout=5000)
+            except Exception:
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+            await page.wait_for_timeout(1500)
+    return st
+
 async def fresh_verify(idx, acc, dest):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
@@ -291,7 +328,7 @@ async def fresh_verify(idx, acc, dest):
             if not await login(page, acc):
                 return {"login": False}
             await open_rules(page)
-            st = await rules_state(page, dest)
+            st = await deep_state(page, dest)
             st["login"] = True
             return st
         finally:
@@ -322,7 +359,7 @@ async def do_one(p, idx, acc):
             res["steps"] = steps
             res["created"] = bool(made)
             await open_rules(page)
-            st1 = await rules_state(page, dest)
+            st1 = await deep_state(page, dest)
             res["after_reload"] = st1
             res["status"] = "rule_created" if st1["has_dest"] else "rule_failed"
         save()
