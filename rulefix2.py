@@ -221,7 +221,10 @@ async def create_rule(page, dest, idx, steps):
         # Clicking the real button commits the recipient as a pill; an
         # uncommitted address is discarded on blur, so verify and retry.
         committed = False
-        for attempt in range(4):
+        for attempt in range(5):
+            # The recovery dialog can appear mid-step and swallow every
+            # click; clear it at the top of every attempt.
+            await dismiss_dialog(page)
             tnow = await body_text(page)
             low = tnow.lower()
             if dest.lower() in low and "use this address" not in low:
@@ -244,7 +247,8 @@ async def create_rule(page, dest, idx, steps):
                 await page.mouse.click(cb["x"] + cb["width"] + 130, cb["y"] + cb["height"] / 2)
                 await page.wait_for_timeout(500)
                 await page.keyboard.press("Control+a")
-                await page.keyboard.type(dest, delay=40)
+                await page.keyboard.press("Backspace")
+                await page.keyboard.type(dest, delay=60)
             await page.wait_for_timeout(2000)
         tnow = await body_text(page)
         steps["use_this_still_showing"] = "use this address" in tnow.lower()
