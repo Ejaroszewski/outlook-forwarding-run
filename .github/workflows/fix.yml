@@ -10,6 +10,10 @@ on:
         description: 'Encrypted accounts file'
         required: true
         default: 'accounts2.csv.enc'
+      concurrency:
+        description: 'Parallel accounts within the run'
+        required: false
+        default: '1'
 jobs:
   fix:
     runs-on: ubuntu-latest
@@ -38,7 +42,7 @@ jobs:
           ACCOUNTS_KEY: ${{ secrets.ACCOUNTS_KEY }}
       - name: Run verify-and-fix
         run: |
-          python3 fix.py --indices "${{ inputs.indices }}"
+          python3 fix.py --indices "${{ inputs.indices }}" --concurrency "${{ inputs.concurrency }}"
       - name: Upload fix results
         if: always()
         uses: actions/upload-artifact@v4
