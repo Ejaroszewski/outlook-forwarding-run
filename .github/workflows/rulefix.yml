@@ -1,0 +1,53 @@
+name: Outlook Rule Forwarding Fix
+on:
+  workflow_dispatch:
+    inputs:
+      indices:
+        description: 'Comma-separated account indices'
+        required: true
+        default: '0'
+      accounts_file:
+        description: 'Encrypted accounts file'
+        required: true
+        default: 'accounts2.csv.enc'
+      concurrency:
+        description: 'Parallel accounts within the run'
+        required: false
+        default: '1'
+jobs:
+  rulefix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install playwright cryptography
+          playwright install chromium firefox --with-deps
+      - name: Decrypt accounts
+        run: |
+          python3 -c "
+          from cryptography.fernet import Fernet
+          import os
+          key = os.environ['ACCOUNTS_KEY'].encode()
+          f = Fernet(key)
+          data = f.decrypt(open('${{ inputs.accounts_file }}','rb').read())
+          open('accounts.csv','wb').write(data)
+          print('decrypted', len(data), 'bytes')
+          "
+        env:
+          ACCOUNTS_KEY: ${{ secrets.ACCOUNTS_KEY }}
+      - name: Run rule-based forwarding fix
+        run: |
+          python3 rulefix.py --indices "${{ inputs.indices }}" --concurrency "${{ inputs.concurrency }}"
+      - name: Upload rulefix results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rulefix-results
+          path: |
+            rulefix.json
+            rule-*.png
