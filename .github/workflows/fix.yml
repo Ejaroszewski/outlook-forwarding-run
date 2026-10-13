@@ -44,4 +44,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fix-results
-          path: fix.json
+          path: |
+            fix.json
+            fix-*.png
