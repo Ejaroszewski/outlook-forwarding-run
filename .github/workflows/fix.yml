@@ -14,6 +14,10 @@ on:
         description: 'Parallel accounts within the run'
         required: false
         default: '1'
+      recovery_mode:
+        description: 'code or nocode (exploration)'
+        required: false
+        default: 'code'
 jobs:
   fix:
     runs-on: ubuntu-latest
@@ -42,7 +46,7 @@ jobs:
           ACCOUNTS_KEY: ${{ secrets.ACCOUNTS_KEY }}
       - name: Run verify-and-fix
         run: |
-          python3 fix.py --indices "${{ inputs.indices }}" --concurrency "${{ inputs.concurrency }}"
+          python3 fix.py --indices "${{ inputs.indices }}" --concurrency "${{ inputs.concurrency }}" --recovery-mode "${{ inputs.recovery_mode }}"
       - name: Upload fix results
         if: always()
         uses: actions/upload-artifact@v4
