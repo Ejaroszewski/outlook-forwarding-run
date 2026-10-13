@@ -217,28 +217,38 @@ async def create_rule(page, dest, idx, steps):
         await page.keyboard.type(dest, delay=40)
         await page.wait_for_timeout(1800)
         steps["address_typed"] = True
-        # The picker shows a "Use this address: <addr>" button; clicking it
-        # is what actually commits the recipient.
+        # Commit loop: the picker shows a "Use this address: <addr>" button.
+        # Clicking the real button commits the recipient as a pill; an
+        # uncommitted address is discarded on blur, so verify and retry.
         committed = False
-        for fn in (
-            lambda: page.get_by_role("button", name=re.compile(r"Use this address", re.I)).first.click(timeout=5000),
-            lambda: page.get_by_text("Use this address", exact=False).first.click(timeout=5000),
-        ):
-            try:
-                await fn()
+        for attempt in range(4):
+            tnow = await body_text(page)
+            low = tnow.lower()
+            if dest.lower() in low and "use this address" not in low:
                 committed = True
-                steps["address_use_this_clicked"] = True
                 break
-            except Exception:
-                continue
-        if not committed:
-            await page.keyboard.press("Enter")
-        await page.wait_for_timeout(1500)
+            clicked = False
+            for fn in (
+                lambda: page.get_by_role("button", name=f"Use this address: {dest}").first.click(timeout=4000),
+                lambda: page.get_by_role("button", name=re.compile(r"Use this address", re.I)).first.click(timeout=4000),
+                lambda: page.get_by_text(re.compile(r"Use this address", re.I)).first.click(timeout=4000),
+            ):
+                try:
+                    await fn()
+                    clicked = True
+                    break
+                except Exception:
+                    continue
+            steps[f"commit_attempt_{attempt}"] = "clicked" if clicked else "no_button"
+            if not clicked and cb:
+                await page.mouse.click(cb["x"] + cb["width"] + 130, cb["y"] + cb["height"] / 2)
+                await page.wait_for_timeout(500)
+                await page.keyboard.press("Control+a")
+                await page.keyboard.type(dest, delay=40)
+            await page.wait_for_timeout(2000)
         tnow = await body_text(page)
         steps["use_this_still_showing"] = "use this address" in tnow.lower()
-        if dest.lower() not in tnow.lower():
-            await page.keyboard.press("Tab")
-            await page.wait_for_timeout(1000)
+        steps["address_committed"] = bool(committed or (dest.lower() in tnow.lower() and not steps["use_this_still_showing"]))
         addr = True
     except Exception as e:
         steps["address_error"] = str(e)[:150]
