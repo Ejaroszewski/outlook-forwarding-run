@@ -20,7 +20,7 @@ async def main():
     args = ap.parse_args()
     accounts = load_accounts()
     acc = accounts[args.index]
-    dest = dest_for(args.index, acc)
+    dest = dest_for(args.index)
     out = {"email": acc["email"], "dest": dest}
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
