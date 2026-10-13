@@ -1,8 +1,8 @@
-"""Read-only forwarding verification.
+"""Read-only forwarding verification — forensic edition.
 
 For each sampled account index: log in, open the Forwarding settings,
-READ BACK the current state (toggle on/off, address in the box, keep-copy),
-and optionally search Inbox/Junk for a test token. Changes NOTHING.
+and dump EVERY interactive control on the page (switches, checkboxes,
+inputs, with labels and values) plus a screenshot. Changes NOTHING.
 Writes verify.json incrementally.
 """
 import argparse, asyncio, json, random
@@ -13,7 +13,6 @@ UAS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ]
 VWS = [{"width": 1366, "height": 768}, {"width": 1440, "height": 900},
        {"width": 1536, "height": 864}, {"width": 1920, "height": 1080}]
@@ -25,61 +24,81 @@ def save():
     with open("verify.json", "w") as f:
         json.dump(RESULTS, f, indent=1)
 
-async def read_settings(page):
-    out = {"enabled": None, "address": None, "keep_copy": None, "wall": False}
-    await page.goto("https://outlook.live.com/mail/0/options/mail/forwarding",
-                    wait_until="domcontentloaded", timeout=60000)
-    await page.wait_for_timeout(12000)
-    modal = None
-    for sel in ["[class*='optionsModal']", "[role='dialog']", ".ms-Modal"]:
-        loc = page.locator(sel).first
-        try:
-            if await loc.count() > 0 and await loc.is_visible():
-                modal = loc
+DUMP_JS = """() => {
+  const out = {switches: [], checkboxes: [], inputs: [], buttons: [], text: ''};
+  out.text = (document.body ? document.body.innerText : '').slice(0, 8000);
+  document.querySelectorAll('[role="switch"]').forEach(el => {
+    out.switches.push({aria_checked: el.getAttribute('aria-checked'),
+                       aria_label: el.getAttribute('aria-label'),
+                       visible: !!(el.offsetWidth || el.offsetHeight)});
+  });
+  document.querySelectorAll('input[type="checkbox"]').forEach(el => {
+    let lab = '';
+    const wrap = el.closest('label') || el.parentElement;
+    if (wrap) lab = (wrap.innerText || '').slice(0, 100);
+    out.checkboxes.push({checked: el.checked, label: lab,
+                         aria_label: el.getAttribute('aria-label'),
+                         visible: !!(el.offsetWidth || el.offsetHeight)});
+  });
+  document.querySelectorAll('input').forEach(el => {
+    if (el.type === 'checkbox' || el.type === 'radio' || el.type === 'hidden') return;
+    out.inputs.push({type: el.type, value: el.value,
+                     placeholder: el.placeholder || '',
+                     aria_label: el.getAttribute('aria-label') || '',
+                     visible: !!(el.offsetWidth || el.offsetHeight)});
+  });
+  return out;
+}"""
+
+def interpret(dump):
+    """Extract {enabled, address, wall} from a forensic dump."""
+    out = {"enabled": None, "address": None, "wall": False}
+    if not dump:
+        return out
+    text = (dump.get("text") or "").lower()
+    out["wall"] = "verify your account to forward" in text
+    sw = [s for s in dump.get("switches", []) if s.get("visible")]
+    if sw:
+        out["enabled"] = sw[0].get("aria_checked")
+    else:
+        for cb in dump.get("checkboxes", []):
+            lab = (cb.get("label") or "") + " " + (cb.get("aria_label") or "")
+            if "enable forwarding" in lab.lower():
+                out["enabled"] = "true" if cb.get("checked") else "false"
                 break
-        except Exception:
-            pass
-    if modal is None:
-        modal = page.locator("body")
-    try:
-        text = (await modal.inner_text())[:3000]
-    except Exception:
-        text = ""
-    out["wall"] = "verify your account to forward" in text.lower()
-    out["panel_text"] = text[:400]
-    try:
-        sw = modal.locator('button[role="switch"], [role="switch"]').first
-        if await sw.count() > 0:
-            out["enabled"] = await sw.get_attribute("aria-checked")
-    except Exception as e:
-        out["enabled_err"] = str(e)[:120]
-    try:
-        inp = modal.locator('input[type="text"], input[type="email"]').first
-        if await inp.count() > 0:
-            out["address"] = await inp.input_value()
-    except Exception as e:
-        out["address_err"] = str(e)[:120]
-    try:
-        cbs = await modal.locator('input[type="checkbox"]').all()
-        if cbs:
-            out["keep_copy"] = await cbs[-1].is_checked()
-    except Exception:
-        pass
+    for inp in dump.get("inputs", []):
+        v = (inp.get("value") or "").strip()
+        if "@" in v:
+            out["address"] = v
+            break
     return out
 
-async def find_token(page, token):
-    found = []
-    for name, url in [("inbox", "https://outlook.live.com/mail/0/inbox/"),
-                      ("junk", "https://outlook.live.com/mail/0/junkemail/")]:
+async def read_settings(page, idx=0):
+    dump = await read_settings_dump(page, idx)
+    s = interpret(dump)
+    s["raw"] = {"switches": dump.get("switches"), "checkboxes": dump.get("checkboxes"),
+                "inputs": dump.get("inputs")}
+    return s
+
+async def read_settings_dump(page, idx):
+    await page.goto("https://outlook.live.com/mail/0/options/mail/forwarding",
+                    wait_until="domcontentloaded", timeout=60000)
+    # Wait until the forwarding panel content shows up (up to ~60s)
+    for _ in range(20):
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(9000)
-            body = await page.inner_text("body")
-            if token in body:
-                found.append(name)
-        except Exception as e:
-            print(f"    token search error {name}: {str(e)[:100]}", flush=True)
-    return found
+            t = await page.inner_text("body")
+        except Exception:
+            t = ""
+        if "Enable forwarding" in t or "Forwarding and IMAP" in t:
+            break
+        await page.wait_for_timeout(3000)
+    await page.wait_for_timeout(6000)
+    data = await page.evaluate(DUMP_JS)
+    try:
+        await page.screenshot(path=f"shot-{idx}.png", full_page=False)
+    except Exception as e:
+        print(f"    screenshot failed: {str(e)[:80]}", flush=True)
+    return data
 
 async def check_one(idx, acc, token):
     res = {"idx": idx, "email": acc["email"]}
@@ -98,15 +117,14 @@ async def check_one(idx, acc, token):
             print(f"[{idx}] {acc['email']} login={'OK' if ok else 'FAILED'}", flush=True)
             if ok:
                 try:
-                    res["settings"] = await read_settings(page)
+                    dump = await read_settings_dump(page, idx)
+                    res["dump"] = dump
+                    res["settings"] = interpret(dump)
                     s = res["settings"]
-                    print(f"[{idx}] SETTINGS enabled={s['enabled']} address={s['address']!r} keep_copy={s['keep_copy']} wall={s['wall']}", flush=True)
+                    print(f"[{idx}] SETTINGS enabled={s['enabled']} address={s['address']!r} wall={s['wall']} | switches={dump['switches']} inputs={dump['inputs']}", flush=True)
                 except Exception as e:
-                    res["settings_error"] = str(e)[:200]
-                    print(f"[{idx}] SETTINGS ERROR {res['settings_error']}", flush=True)
-                if token:
-                    res["token_found_in"] = await find_token(page, token)
-                    print(f"[{idx}] TOKEN found in: {res['token_found_in']}", flush=True)
+                    res["dump_error"] = str(e)[:200]
+                    print(f"[{idx}] DUMP ERROR {res['dump_error']}", flush=True)
         except Exception as e:
             res["error"] = str(e)[:200]
             print(f"[{idx}] ERROR {res['error']}", flush=True)
@@ -127,7 +145,7 @@ async def main():
     idxs = [int(x) for x in args.indices.split(",") if x.strip()]
     for idx in idxs:
         await check_one(idx, accounts[idx], args.token)
-    print("VERIFY DONE", json.dumps({e: (r.get("settings") or {}).get("enabled") for e, r in RESULTS.items()}), flush=True)
+    print("VERIFY DONE", flush=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
