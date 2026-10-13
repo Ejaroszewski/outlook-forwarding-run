@@ -76,7 +76,33 @@ def get_verification_code_from_gmail(refresh_token, client_id, max_wait=120):
     print(f"    no verification code found in Gmail", flush=True)
     return None
 
-def dest_for(idx):
+def _load_dest_overrides():
+    """Email -> destination overrides from dest-overrides.json beside this file.
+
+    Ledger (2026-10-07): the 43 testF/testI successes appended to
+    accounts2.csv.enc at indices 1010-1052 all forward to
+    ranksoldier2@gmail.com, NOT the DESTS[10] their index computes.
+    """
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "dest-overrides.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return {k.lower(): v for k, v in data.items()}
+    except Exception:
+        return {}
+
+DEST_OVERRIDES = _load_dest_overrides()
+# Appended block in accounts2.csv.enc (see ledger above): indices 1010-1052
+# belong to ranksoldier2 even though idx // 100 selects DESTS[10].
+APPENDED_BLOCK_DEST = "ranksoldier2@gmail.com"
+APPENDED_BLOCK_RANGE = range(1010, 1053)
+
+def dest_for(idx, email=None):
+    if email and email.lower() in DEST_OVERRIDES:
+        return DEST_OVERRIDES[email.lower()]
+    if idx in APPENDED_BLOCK_RANGE:
+        return APPENDED_BLOCK_DEST
     return DESTS[idx // 100]
 
 def load_accounts():
