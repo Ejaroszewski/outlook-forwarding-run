@@ -67,6 +67,26 @@ async def open_editor(page):
         await page.wait_for_timeout(2000)
     return False
 
+async def dismiss_dialog(page):
+    """If the recovery-method dialog overlays the page, dismiss with Not now."""
+    try:
+        t = (await body_text(page)).lower()
+        if "recovery method" not in t:
+            return False
+        for fn in (
+            lambda: page.get_by_role("button", name="Not now").first.click(timeout=5000),
+            lambda: page.get_by_text("Not now").first.click(timeout=5000),
+        ):
+            try:
+                await fn()
+                await page.wait_for_timeout(1800)
+                return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
 async def pick_combo(page, combo_aria, option_part, steps, tag):
     """Open a Fluent combobox, click the option, and VERIFY the combo now
     shows the option. The recovery dialog can appear at any moment and
