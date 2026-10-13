@@ -178,33 +178,40 @@ async def create_rule(page, dest, idx, steps):
         target = None
         if cb:
             for c in cands:
-                if c["type"] in ("text", "email", "search", "") or True:
-                    if abs(c["y"] - cb["y"]) <= 12 and c["x"] > cb["x"] + cb["width"] - 10:
-                        if "Search" in (c["ph"] or "") or "Name your rule" in (c["ph"] or ""):
-                            continue
-                        target = c
-                        break
+                if abs(c["y"] - cb["y"]) <= 12 and c["x"] > cb["x"] + cb["width"] - 10:
+                    if "Search" in (c["ph"] or "") or "Name your rule" in (c["ph"] or ""):
+                        continue
+                    target = c
+                    break
         if target:
             await page.mouse.click(target["x"] + target["w"] / 2, target["y"] + target["h"] / 2)
-            await page.wait_for_timeout(600)
-            await page.keyboard.type(dest, delay=40)
-            await page.wait_for_timeout(1800)
-            steps["address_typed_at"] = target
-            # suggestion callout may appear: click the entry with the address
-            try:
-                sug = page.get_by_text(dest, exact=False).first
-                await sug.wait_for(state="visible", timeout=3000)
-                await sug.click(timeout=3000)
-                steps["address_suggestion_clicked"] = True
-            except Exception:
-                await page.keyboard.press("Enter")
-            await page.wait_for_timeout(1200)
-            # commit with Tab if it is still raw text
-            tnow = await body_text(page)
-            if dest.lower() not in tnow.lower():
-                await page.keyboard.press("Tab")
-                await page.wait_for_timeout(1000)
-            addr = True
+        elif cb:
+            # No input in the DOM yet: the recipient well is a container
+            # that mounts its input on click. Click its center.
+            cx = cb["x"] + cb["width"] + 130
+            cy = cb["y"] + cb["height"] / 2
+            steps["address_container_click"] = {"x": cx, "y": cy}
+            await page.mouse.click(cx, cy)
+        else:
+            raise RuntimeError("no action combobox box")
+        await page.wait_for_timeout(900)
+        # Whatever input the click mounted should now be focused.
+        await page.keyboard.type(dest, delay=40)
+        await page.wait_for_timeout(1800)
+        steps["address_typed"] = True
+        try:
+            sug = page.get_by_text(dest, exact=False).first
+            await sug.wait_for(state="visible", timeout=3000)
+            await sug.click(timeout=3000)
+            steps["address_suggestion_clicked"] = True
+        except Exception:
+            await page.keyboard.press("Enter")
+        await page.wait_for_timeout(1200)
+        tnow = await body_text(page)
+        if dest.lower() not in tnow.lower():
+            await page.keyboard.press("Tab")
+            await page.wait_for_timeout(1000)
+        addr = True
     except Exception as e:
         steps["address_error"] = str(e)[:150]
     steps["address_set"] = addr
