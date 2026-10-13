@@ -345,14 +345,16 @@ async def fresh_verify(idx, acc, dest):
             await browser.close()
 
 async def do_one(p, idx, acc):
-    dest = dest_for(idx, acc["email"])
-    res = {"idx": idx, "email": acc["email"], "dest": dest}
+    dest = None
+    res = {"idx": idx, "email": acc["email"]}
     RESULTS[acc["email"]] = res
     save()
     browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
     ctx = await browser.new_context(user_agent=UAS[idx % len(UAS)], viewport=VWS[idx % len(VWS)], timezone_id=TZS[idx % len(TZS)])
     page = await ctx.new_page()
     try:
+        dest = dest_for(idx, acc["email"])
+        res["dest"] = dest
         ok = await login(page, acc)
         res["login"] = ok
         if not ok:
@@ -397,7 +399,7 @@ async def main():
         async def guarded(idx):
             async with sem:
                 await do_one(p, idx, accounts[idx])
-        await asyncio.gather(*(guarded(i) for i in idxs))
+        await asyncio.gather(*(guarded(i) for i in idxs), return_exceptions=True)
     save()
     conf = sum(1 for r in RESULTS.values() if r.get("status") == "confirmed")
     print(f"done: {len(RESULTS)} accounts, {conf} triple-confirmed")
