@@ -5,9 +5,19 @@ READ BACK the current state (toggle on/off, address in the box, keep-copy),
 and optionally search Inbox/Junk for a test token. Changes NOTHING.
 Writes verify.json incrementally.
 """
-import argparse, asyncio, json
+import argparse, asyncio, json, random
 from playwright.async_api import async_playwright
-from forward import login, load_accounts, pick_fingerprint
+from forward import login, load_accounts
+
+UAS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+]
+VWS = [{"width": 1366, "height": 768}, {"width": 1440, "height": 900},
+       {"width": 1536, "height": 864}, {"width": 1920, "height": 1080}]
+TZS = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles"]
 
 RESULTS = {}
 
@@ -73,18 +83,15 @@ async def find_token(page, token):
 
 async def check_one(idx, acc, token):
     res = {"idx": idx, "email": acc["email"]}
-    fp = pick_fingerprint()
     async with async_playwright() as p:
-        if fp["engine"] == "firefox":
-            browser = await p.firefox.launch(headless=True)
-        else:
-            browser = await p.chromium.launch(
-                headless=True, args=["--disable-blink-features=AutomationControlled"])
+        browser = await p.chromium.launch(
+            headless=True, args=["--disable-blink-features=AutomationControlled"])
         try:
             ctx = await browser.new_context(
-                user_agent=fp["ua"], viewport=fp["viewport"],
-                locale=fp["locale"], timezone_id=fp["tz"],
-                color_scheme=fp["color"], device_scale_factor=fp["scale"])
+                user_agent=random.choice(UAS), viewport=random.choice(VWS),
+                locale="en-US", timezone_id=random.choice(TZS),
+                color_scheme="light", device_scale_factor=1)
+            await ctx.clear_cookies()
             page = await ctx.new_page()
             ok = await login(page, acc)
             res["login"] = bool(ok)
