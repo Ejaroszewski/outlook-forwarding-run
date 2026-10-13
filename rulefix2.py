@@ -155,38 +155,58 @@ async def create_rule(page, dest, idx, steps):
     await page.wait_for_timeout(2500)
     steps["dialog_after_action"] = await dismiss_dialog(page)
     await shot(page, idx, "action")
-    # Address people-picker
+    # Address: the recipient box sits in the same row as the action
+    # combobox, immediately to its right. Find it by geometry.
     addr = False
     try:
-        boxes = page.locator('input[type="text"], input:not([type])')
-        n = await boxes.count()
-        for i in range(n - 1, -1, -1):
-            b = boxes.nth(i)
+        combo = page.locator('[role="combobox"][aria-label*="action" i]').first
+        cb = await combo.bounding_box()
+        steps["combo_box"] = cb
+        cands = await page.evaluate("""() => {
+          const out = [];
+          document.querySelectorAll('input').forEach(i => {
+            const r = i.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) out.push({
+              type: i.type, ph: i.placeholder || '', aria: i.getAttribute('aria-label') || '',
+              x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height),
+              val: i.value || ''
+            });
+          });
+          return out;
+        }""")
+        steps["address_candidates"] = cands
+        target = None
+        if cb:
+            for c in cands:
+                if c["type"] in ("text", "email", "search", "") or True:
+                    if abs(c["y"] - cb["y"]) <= 12 and c["x"] > cb["x"] + cb["width"] - 10:
+                        if "Search" in (c["ph"] or "") or "Name your rule" in (c["ph"] or ""):
+                            continue
+                        target = c
+                        break
+        if target:
+            await page.mouse.click(target["x"] + target["w"] / 2, target["y"] + target["h"] / 2)
+            await page.wait_for_timeout(600)
+            await page.keyboard.type(dest, delay=40)
+            await page.wait_for_timeout(1800)
+            steps["address_typed_at"] = target
+            # suggestion callout may appear: click the entry with the address
             try:
-                if not await b.is_visible():
-                    continue
-                val = await b.input_value()
-                ph = (await b.get_attribute("placeholder")) or ""
-                if val.strip() == RULE_NAME or "Name your rule" in ph or ph == "Search":
-                    continue
-                await b.click(timeout=4000)
-                await b.type(dest, delay=40)
-                await page.wait_for_timeout(1800)
-                # a suggestion may appear; click it if it shows the address
-                try:
-                    sug = page.get_by_text(dest, exact=False).first
-                    await sug.wait_for(state="visible", timeout=3000)
-                    await sug.click(timeout=3000)
-                except Exception:
-                    await page.keyboard.press("Enter")
-                await page.wait_for_timeout(1500)
-                steps["address_box_placeholder"] = ph
-                addr = True
-                break
+                sug = page.get_by_text(dest, exact=False).first
+                await sug.wait_for(state="visible", timeout=3000)
+                await sug.click(timeout=3000)
+                steps["address_suggestion_clicked"] = True
             except Exception:
-                continue
+                await page.keyboard.press("Enter")
+            await page.wait_for_timeout(1200)
+            # commit with Tab if it is still raw text
+            tnow = await body_text(page)
+            if dest.lower() not in tnow.lower():
+                await page.keyboard.press("Tab")
+                await page.wait_for_timeout(1000)
+            addr = True
     except Exception as e:
-        steps["address_error"] = str(e)[:100]
+        steps["address_error"] = str(e)[:150]
     steps["address_set"] = addr
     steps["dialog_after_address"] = await dismiss_dialog(page)
     t = await body_text(page)
@@ -197,6 +217,7 @@ async def create_rule(page, dest, idx, steps):
     try:
         btn = page.get_by_role("button", name="Save").first
         await btn.wait_for(state="visible", timeout=8000)
+        steps["save_enabled"] = await btn.is_enabled()
         try:
             await btn.click(timeout=8000)
         except Exception:
