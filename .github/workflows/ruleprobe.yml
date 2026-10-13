@@ -1,0 +1,36 @@
+name: ruleprobe
+on:
+  workflow_dispatch:
+    inputs:
+      index:
+        description: "Account index"
+        required: true
+        default: "0"
+      accounts_file:
+        description: "Encrypted accounts file"
+        required: true
+        default: "accounts2.csv.enc"
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install playwright cryptography && playwright install --with-deps chromium
+      - name: Probe rules editor
+        env:
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+        run: python ruleprobe.py --accounts-file "${{ inputs.accounts_file }}" --encrypted-key "$ENCRYPTION_KEY" --index "${{ inputs.index }}"
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-results
+          path: |
+            probe.json
+            probe-*.png
+          if-no-files-found: warn
