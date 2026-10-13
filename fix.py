@@ -193,8 +193,15 @@ async def handle_recovery(page, dest, acc, idx, steps):
         pass
     steps["recovery_url"] = work.url[:90]
     await shot(work, idx, "rec1")
-    for rnd in range(7):
+    for rnd in range(10):
         text = (await body_text(work)).lower()
+        # success: the destination is now listed as a proof on this page
+        if "ways to prove who you are" in text and dest.lower() in text:
+            return "added"
+        # success fallback: after the code step, an email proof exists on the list
+        if ("ways to prove who you are" in text and steps.get("rec_code_step")
+                and ("email" in text) and "add another way" in text):
+            return "added"
         # password re-entry
         try:
             pw = work.locator('input[type="password"]').first
@@ -206,13 +213,63 @@ async def handle_recovery(page, dest, acc, idx, steps):
                 continue
         except Exception:
             pass
-        # code demanded?
-        if ("enter the code" in text or "we sent a code" in text or "verification code" in text
-                or "enter your code" in text) and "recovery" not in text.split("code")[0][-40:]:
-            steps["rec_code_text_seen"] = True
+        # code entry visible? fetch the code from the account's token inbox
+        code_box = None
+        for sel in ['input[name="ProofCode"]', 'input[id*="code" i]', 'input[aria-label*="code" i]',
+                    'input[type="tel"]', 'input[inputmode="numeric"]']:
+            try:
+                inp = work.locator(sel).first
+                if await inp.count() > 0 and await inp.is_visible():
+                    code_box = inp
+                    break
+            except Exception:
+                continue
+        if code_box is not None or "enter the code" in text or "we sent a code" in text:
+            steps["rec_code_step"] = True
             await shot(work, idx, "rec-code")
-            return "code_required"
-        # choose "add email" style options first if no email box yet
+            code = None
+            rt, cid = acc.get("refresh_token", ""), acc.get("client_id", "")
+            if rt and cid:
+                from forward import get_verification_code_from_gmail
+                code = await asyncio.to_thread(get_verification_code_from_gmail, rt, cid, 120)
+            steps["rec_code_fetched"] = bool(code)
+            if not code:
+                return "code_required"
+            try:
+                if code_box is not None:
+                    await code_box.click(timeout=4000)
+                    await code_box.fill(code)
+                else:
+                    # multi-box code entry: type it
+                    await work.keyboard.type(code, delay=60)
+                await click_button(work, ["Next", "Verify", "Submit", "OK"], timeout=5000)
+                await work.wait_for_timeout(5000)
+                await shot(work, idx, "rec-code-done")
+                continue
+            except Exception as e:
+                steps["rec_code_fill_error"] = str(e)[:80]
+                return "code_required"
+        # proofs page: open the "add another way" dialog
+        if "add another way to sign in" in text:
+            try:
+                el = work.get_by_text("Add another way to sign in", exact=False).first
+                await el.click(timeout=6000)
+                steps["rec_add_way_clicked"] = True
+                await work.wait_for_timeout(3500)
+                continue
+            except Exception:
+                pass
+        # add-way dialog: choose "Email a code"
+        if "add a new way to sign in or verify" in text or "email a code" in text:
+            try:
+                el = work.get_by_text("Email a code", exact=False).first
+                await el.click(timeout=6000)
+                steps["rec_email_code_clicked"] = True
+                await work.wait_for_timeout(3500)
+                continue
+            except Exception:
+                pass
+        # email entry box
         email_box = None
         for sel in ['input[type="email"]', 'input[name="Email"]', 'input[name="EmailAddress"]',
                     'input[placeholder*="mail" i]', 'input[aria-label*="mail" i]']:
@@ -234,47 +291,7 @@ async def handle_recovery(page, dest, acc, idx, steps):
             steps["rec_submit"] = clicked
             await work.wait_for_timeout(5000)
             await shot(work, idx, "rec2")
-            # after submit: success if dest now appears on a security-info page
-            t2 = (await body_text(work)).lower()
-            if dest.lower() in t2 and "enter" not in t2[:200]:
-                return "added"
-            if "code" in t2 and ("sent" in t2 or "enter" in t2):
-                await shot(work, idx, "rec-code2")
-                return "code_required"
             continue
-        # click an add-email option
-        acted = None
-        for txt in ["Add an email address", "Add an email", "Add email", "Add a new email",
-                    "Email address", "Add security info", "Add another"]:
-            try:
-                el = work.get_by_text(txt, exact=False).first
-                await el.wait_for(state="visible", timeout=2500)
-                await el.click(timeout=5000)
-                acted = txt
-                break
-            except Exception:
-                continue
-        if acted:
-            steps.setdefault("rec_choices", []).append(acted)
-            await work.wait_for_timeout(4000)
-            continue
-        # dropdown based add flow (proofs page uses a select)
-        try:
-            sel = work.locator("select").first
-            if await sel.count() > 0 and await sel.is_visible():
-                opts = await sel.evaluate("el => Array.from(el.options).map(o => o.text)")
-                steps["rec_select_options"] = [o[:40] for o in opts][:8]
-                for o in opts:
-                    if "mail" in o.lower():
-                        await sel.select_option(label=o)
-                        steps["rec_select_chose"] = o[:40]
-                        break
-                await work.wait_for_timeout(3000)
-                continue
-        except Exception:
-            pass
-        if dest.lower() in text:
-            return "added"
         await work.wait_for_timeout(3000)
     await shot(work, idx, "rec-end")
     try:
@@ -283,6 +300,15 @@ async def handle_recovery(page, dest, acc, idx, steps):
     except Exception:
         pass
     return "failed"
+
+async def quick_state(page):
+    """Interpret the panel as currently rendered (no navigation)."""
+    from verify import read_settings_dump
+    import verify as _v
+    # dump without the goto: evaluate DUMP_JS on the current page
+    await page.wait_for_timeout(1500)
+    dump = await page.evaluate(_v.DUMP_JS)
+    return interpret(dump)
 
 async def fix_one(idx, acc):
     dest = dest_for(idx)
@@ -329,8 +355,8 @@ async def fix_one(idx, acc):
                                         break
                             except Exception:
                                 pass
-                        # re-check and re-apply if needed
-                        s2 = await read_settings(page, idx)
+                        # re-check (cheap, in-page) and re-apply if needed
+                        s2 = await quick_state(page)
                         if not is_correct(s2, dest):
                             await open_panel(page)
                             if await apply_fields(page, dest, idx, steps, "second"):
@@ -362,11 +388,15 @@ async def fix_one(idx, acc):
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--indices", required=True)
+    ap.add_argument("--concurrency", type=int, default=1)
     args = ap.parse_args()
     accounts = load_accounts()
     idxs = [int(x) for x in args.indices.split(",") if x.strip()]
-    for idx in idxs:
-        await fix_one(idx, accounts[idx])
+    sem = asyncio.Semaphore(max(1, args.concurrency))
+    async def guarded(i):
+        async with sem:
+            await fix_one(i, accounts[i])
+    await asyncio.gather(*[guarded(i) for i in idxs])
     from collections import Counter
     print("FIX DONE", Counter(r["status"] for r in RESULTS.values()), flush=True)
 
