@@ -45,7 +45,7 @@ async def fix_one(idx, acc):
             if not ok:
                 res["status"] = "login_failed"
             else:
-                s1 = await read_settings(page)
+                s1 = await read_settings(page, idx)
                 res["before"] = {"enabled": s1.get("enabled"), "address": s1.get("address"), "wall": s1.get("wall")}
                 print(f"[{idx}] BEFORE enabled={s1.get('enabled')} address={s1.get('address')!r} wall={s1.get('wall')}", flush=True)
                 if s1.get("wall"):
@@ -55,7 +55,7 @@ async def fix_one(idx, acc):
                 else:
                     made = await create_rule(page, dest, acc)
                     res["create_rule_returned"] = bool(made)
-                    s2 = await read_settings(page)
+                    s2 = await read_settings(page, idx)
                     res["after"] = {"enabled": s2.get("enabled"), "address": s2.get("address"), "wall": s2.get("wall")}
                     print(f"[{idx}] AFTER enabled={s2.get('enabled')} address={s2.get('address')!r}", flush=True)
                     res["status"] = "fixed_confirmed" if is_correct(s2, dest) else "fix_failed"
