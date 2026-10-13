@@ -140,22 +140,56 @@ async def set_forwarding(page, dest, idx):
     except Exception:
         pass
     await maybe_shot(page, idx, "beforesave")
-    # 4) Save
-    saved = False
-    for scope in [modal, page]:
+    # 4) Save — clicking Save pops a Microsoft recovery-method dialog
+    # ("Keep access to your account with a recovery method") that BLOCKS
+    # the save from completing. Dismiss it with "Not now", then save
+    # again if the panel still shows unsaved changes. Loop up to 3 times.
+    async def dismiss_recovery_dialog():
         try:
-            btn = scope.get_by_role("button", name="Save").first
-            await btn.wait_for(state="visible", timeout=8000)
-            try:
-                await btn.click(timeout=8000)
-            except Exception:
-                await btn.evaluate("el => el.click()")
-            saved = True
-            break
+            t = await page.inner_text("body")
         except Exception:
-            continue
-    steps["save_clicked"] = saved
-    await page.wait_for_timeout(5000)
+            return False
+        if "recovery method" not in t.lower():
+            return False
+        for scope in [page, modal]:
+            try:
+                btn = scope.get_by_role("button", name="Not now").first
+                await btn.wait_for(state="visible", timeout=4000)
+                try:
+                    await btn.click(timeout=5000)
+                except Exception:
+                    await btn.evaluate("el => el.click()")
+                await page.wait_for_timeout(2500)
+                return True
+            except Exception:
+                continue
+        return False
+
+    save_attempts = 0
+    dialog_seen = False
+    for attempt in range(3):
+        clicked_save = False
+        for scope in [modal, page]:
+            try:
+                btn = scope.get_by_role("button", name="Save").first
+                await btn.wait_for(state="visible", timeout=6000)
+                try:
+                    await btn.click(timeout=8000)
+                except Exception:
+                    await btn.evaluate("el => el.click()")
+                clicked_save = True
+                break
+            except Exception:
+                continue
+        if not clicked_save:
+            break  # no Save button visible -> changes already committed
+        save_attempts += 1
+        await page.wait_for_timeout(3000)
+        if await dismiss_recovery_dialog():
+            dialog_seen = True
+        await page.wait_for_timeout(2000)
+    steps["save_attempts"] = save_attempts
+    steps["recovery_dialog_seen"] = dialog_seen
     await maybe_shot(page, idx, "aftersave")
     return steps
 
