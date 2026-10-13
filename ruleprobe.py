@@ -16,11 +16,9 @@ async def body_text(page):
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--accounts-file", required=True)
-    ap.add_argument("--encrypted-key", required=True)
     ap.add_argument("--index", type=int, required=True)
     args = ap.parse_args()
-    accounts = load_accounts(args.accounts_file, args.encrypted_key)
+    accounts = load_accounts()
     acc = accounts[args.index]
     dest = dest_for(args.index, acc)
     out = {"email": acc["email"], "dest": dest}
