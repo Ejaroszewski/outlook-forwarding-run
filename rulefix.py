@@ -246,6 +246,11 @@ async def do_one(idx, acc):
                 res["status"] = "login_failed"
             else:
                 await open_rules(page)
+                try:
+                    await page.screenshot(path=f"rule-{idx}-list.png")
+                except Exception:
+                    pass
+                res["list_text"] = (await body_text(page))[:1500]
                 st0 = await rules_state(page, dest)
                 res["before"] = st0
                 print(f"[{idx}] BEFORE rule_name={st0['has_rule_name']} dest={st0['has_dest']}", flush=True)
