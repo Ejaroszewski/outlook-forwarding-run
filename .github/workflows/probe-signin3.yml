@@ -1,0 +1,49 @@
+name: Probe Sign-in Verify Gate v3
+on:
+  workflow_dispatch:
+    inputs:
+      index:
+        description: 'Single account index to probe'
+        required: true
+        default: '24'
+      accounts_file:
+        description: 'Encrypted accounts file'
+        required: true
+        default: 'accounts2.csv.enc'
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install playwright cryptography
+          playwright install chromium --with-deps
+      - name: Decrypt accounts
+        run: |
+          python3 -c "
+          from cryptography.fernet import Fernet
+          import os
+          key = os.environ['ACCOUNTS_KEY'].encode()
+          f = Fernet(key)
+          data = f.decrypt(open('${{ inputs.accounts_file }}','rb').read())
+          open('accounts.csv','wb').write(data)
+          print('decrypted', len(data), 'bytes')
+          "
+        env:
+          ACCOUNTS_KEY: ${{ secrets.ACCOUNTS_KEY }}
+      - name: Run probe
+        run: |
+          python3 probe_signin3.py --index "${{ inputs.index }}"
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe3-results
+          path: |
+            probe.json
+            probe-*.png
